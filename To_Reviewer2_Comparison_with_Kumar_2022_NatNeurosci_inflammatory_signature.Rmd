@@ -1,0 +1,379 @@
+---
+title: "To_Reviewer2_Comparison_with_Kumar_2022_NatNeurosci_inflammatory_signature"
+author: "HuangFei"
+date: "2024/3/14"
+output: html_document
+---
+
+## load dependence  
+```{r}
+options(stringsAsFactors = F)
+library(data.table)
+library(ggplot2)
+library(ggrastr)
+library(ggpubr)
+library(Seurat)
+library(ggsci)
+library(cowplot)
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(scales)
+library(GSVA)
+set.seed(123)
+
+my_theme <- theme(plot.title = element_text(hjust = 0.5, size = 18),
+                  legend.position = 'right',
+                  legend.title =element_text(size=16),
+                  legend.text = element_text(size=16),
+                  axis.text.x = element_text(size=16),
+                  axis.title.x = element_text(size=16),
+                  axis.title.y = element_text(size=16),
+                  axis.text.y  = element_text(size=16),
+                  panel.border = element_blank(),
+                  axis.line.x = element_line(size=0.25, color="black"),
+                  axis.line.y = element_line(size=0.25, color="black"),
+                  panel.grid.minor.x = element_blank(), panel.grid.minor.y = element_blank(),
+                  panel.grid.major.x = element_blank(), panel.grid.major.y = element_blank(),
+                  panel.background = element_rect(fill='white'),
+                  legend.key=element_blank(),
+                  strip.text.x = element_text(size=15),
+                  strip.text.y = element_text(size=15),
+                  strip.background = element_rect(colour = 'white', fill = 'white'))
+
+load('~/project/ChenLab/Path-seq/public_data/Science_human_L23/HVS_L23_harmony_obj.RData')
+#HVS_L23 = RenameGenesSeurat(HVS_L23)
+```
+
+## read pcocessed data of Kumar_2022_Nat_Neurosci 
+```{r}
+immune = readRDS('~/project/ChenLab/Path-seq/public_data/Kumar_2022_Nat_Neurosci/immune_cells_16_cluster_figure3.rds')
+
+pbmc =  readRDS('~/project/ChenLab/Path-seq/public_data/Kumar_2022_Nat_Neurosci/PBMC_imm_all_cells_25_cluster_figure1.rds') 
+```
+
+## figure1 microglia
+```{r,fig.width=5.8,fig.height=4.5}
+dim(pbmc)
+
+colnames(pbmc@meta.data)
+
+head(pbmc@meta.data)
+
+pbmc.meta = pbmc@meta.data
+library(plyr)
+pbmc.meta = cbind(pbmc.meta, Embeddings(pbmc, reduction = 'tsne'))
+pbmc.meta$CellType = 'Microglia'
+pbmc.meta[pbmc.meta$seurat_clusters%in%c(13,20,22,23,24),'CellType'] = 'NVUs'
+pbmc.meta[pbmc.meta$seurat_clusters%in%c(21),'CellType'] = 'CD56-CD16+'
+pbmc.meta[pbmc.meta$seurat_clusters%in%c(17),'CellType'] = 'Mac'
+pbmc.meta[pbmc.meta$seurat_clusters%in%c(19),'CellType'] = 'B cells'
+pbmc.meta[pbmc.meta$seurat_clusters%in%c(18),'CellType'] = 'CD45-CD56+'
+pbmc.meta[pbmc.meta$seurat_clusters%in%c(8,15,16),'CellType'] = 'T cells'
+pbmc.meta[pbmc.meta$CellType=='T cells'&pbmc.meta$tSNE_2>(-2),'CellType'] = 'Microglia'
+
+
+sum(table(pbmc.meta$CellType))
+
+pbmc.meta -> pbmc@meta.data
+
+DimPlot(pbmc, reduction = 'tsne',label = T,raster = T)
+
+DimPlot(pbmc, reduction = 'tsne',label = T, group.by = 'CellType',raster = T) + labs(title = '')
+```
+
+
+
+
+
+```{r,fig.width=9,fig.height=10}
+FeaturePlot(pbmc, c('C3','C1QA','CCL2','CDKN1A','NFKBIA','RPS6','EIF4E','EGR2','RHEB','TPI1','ENO1','PGK1'),
+            reduction = 'tsne',cols = c('lightgrey','#FF4500'),ncol = 3, order = F,slot = 'data')
+```
+
+
+## figure3 infiltrating immune 
+```{r,fig.width=5.5,fig.height=4.5}
+dim(immune)
+
+head(immune@meta.data)
+colnames(immune@meta.data)
+
+#table(immune$orig.ident)
+immune@meta.data[,'CellType'] = pbmc.meta[colnames(immune),'CellType']
+
+DimPlot(immune, reduction = 'tsne',label = T,raster = T)
+
+DimPlot(immune, reduction = 'tsne', group.by = 'CellType',label = T,raster = T)+labs(title = 'Immune cells')
+```
+
+
+```{r}
+pdf('~/Project/ChenLab/Path-seq/figure/revision/Kumar_22_NatNeu/Kumar_22_NatNeu_PBMC_tSNE.pdf',5.8,4.5)
+DimPlot(pbmc, reduction = 'tsne',label = T, group.by = 'CellType',raster = T) + labs(title = 'PBMC')
+dev.off()
+
+pdf('~/Project/ChenLab/Path-seq/figure/revision/Kumar_22_NatNeu/Kumar_22_NatNeu_PBMC_labeled_tSNE.pdf',2.5,2.5)
+DimPlot(pbmc, reduction = 'tsne',label = T, group.by = 'CellType',raster = T) + labs(title = 'PBMC') +
+  theme_void()+theme(plot.title = element_text(hjust = 0.5, size = 16),
+                                  legend.position = 'none',legend.title = element_blank())
+dev.off()
+
+pdf('~/Project/ChenLab/Path-seq/figure/revision/Kumar_22_NatNeu/Kumar_22_NatNeu_Immune_tSNE.pdf',5.5,4.5)
+DimPlot(immune, reduction = 'tsne', group.by = 'CellType',label = T,raster = T,
+        cols = hue_pal()(7)[c(1:4,7)])+labs(title = 'Immune cells')
+dev.off()
+```
+
+
+```{r,fig.width=9,fig.height=10}
+FeaturePlot(immune, c('C3','C1QA','CCL2','CDKN1A','NFKBIA','RPS6',
+                      'EIF4E','EGR2','RHEB','TPI1','ENO1','PGK1'),
+            reduction = 'tsne',cols = c('lightgrey','#FF4500'),ncol = 3, order = F,slot = 'data')
+```
+
+### obtain hallmark terms
+```{r,warning=FALSE}
+library(clusterProfiler)
+library(DOSE)
+library(msigdbr)
+#m_df <- msigdbr(species = "Mus musculus")
+#head(m_df, 6) %>% as.data.frame
+
+H_database <- msigdbr(species = "Homo sapiens", category = "H") %>% 
+  dplyr::select(gs_name, gene_symbol)
+head(H_database)
+unique(H_database$gs_name)
+mTORC1 = H_database[grep('HALLMARK_MTORC1_SIGNALING',H_database$gs_name),]$gene_symbol
+length(mTORC1)
+
+inflammatory = H_database[grep('HALLMARK_INFLAMMATORY_RESPONSE',H_database$gs_name),]$gene_symbol
+length(inflammatory)
+
+C2_database <- msigdbr(species = "Homo sapiens", category = "C2") %>% 
+  dplyr::select(gs_name, gene_symbol)
+head(C2_database)
+unique(C2_database$gs_name)
+
+senescence = C2_database[grep('FRIDMAN_SENESCENCE_UP',C2_database$gs_name),]$gene_symbol
+length(senescence)
+
+unique(C2_database[grep('MTOR',C2_database$gs_name),'gs_name'])
+
+mTOR = C2_database[grep('BIOCARTA_MTOR_PATHWAY|KEGG_MTOR_SIGNALING_PATHWAY|REACTOME_MTOR_SIGNALLING',C2_database$gs_name),]$gene_symbol
+#mTOR = C2_database[grep('KEGG_MTOR_SIGNALING_PATHWAY',C2_database$gs_name),]$gene_symbol
+mTOR
+length(mTOR)
+```
+
+## read Chen Lab PY1/2/3 signatures
+```{r}
+chen.markers = fread('~/project/ChenLab/Path-seq/result/Path_seq_SubType_DEG_results.csv', header = T, sep = ',')
+table(chen.markers[pct.1>pct.2&p_val_adj<0.05&avg_log2FC>log2(1.5)]$cluster)
+
+sig.markers = chen.markers[pct.1>pct.2&p_val<0.05&avg_log2FC>log2(2)]
+#sig.markers = sig.markers[,head(.SD,100),by=.(cluster)]
+table(sig.markers$cluster)
+sig.markers[avg_log2FC>1&cluster=='PY2']
+
+gene.list = list(GSVA.INT = sig.markers[cluster=='INT']$gene,
+                 GSVA.PY1 = sig.markers[cluster=='PY1'&p_val_adj<0.05]$gene,
+                 GSVA.PY2 = sig.markers[cluster=='PY2'&p_val_adj<0.05]$gene,
+                 GSVA.PY3 = sig.markers[cluster=='PY3']$gene,
+                 inflammatory = inflammatory,
+                 senescence = senescence,
+                 mTORC1=mTORC1,
+                 mTOR = mTOR)
+```
+
+## GSVA estimation
+```{r}
+library(scales)
+library(GSVA)
+set.seed(123)
+
+mat = pbmc@assays$RNA@data
+
+  chen.GSVA <- gsva(as.matrix(mat[rownames(mat)%in%unlist(gene.list),]), gset.idx.list = gene.list, kcdf="Gaussian",method = "gsva", parallel.sz=4)
+  chen.GSEA <- gsva(as.matrix(mat[rownames(mat)%in%unlist(gene.list),]), gset.idx.list = gene.list, kcdf="Poisson",method = "ssgsea", parallel.sz=4)
+  
+  chen.GSVA.mat = t(apply(chen.GSVA,1,rescale))
+  chen.GSEA.mat = t(apply(chen.GSEA,1,rescale))
+  
+  save(chen.GSEA,chen.GSEA.mat,chen.GSVA,chen.GSVA.mat,
+       file = '~/project/ChenLab/Path-seq/public_data/Kumar_2022_Nat_Neurosci/PBMC_GSVA_results.RData')
+  #pbmc@assays$RNA@data = rbind(pbmc@assays$RNA@data,chen.GSVA.mat)
+```
+
+
+
+```{r}
+load('~/project/ChenLab/Path-seq/public_data/Kumar_2022_Nat_Neurosci/PBMC_GSVA_results.RData')
+pbmc@assays$RNA@data = rbind(pbmc@assays$RNA@data,chen.GSEA.mat)
+```
+
+
+```{r,fig.width=7,fig.height=5}
+FeaturePlot(pbmc, paste0('GSVA.',c('INT',paste0('PY',1:3))),raster = T,
+            reduction = 'tsne',cols = colorRampPalette(c('grey','lightgrey','#FF4500'))(10),ncol = 2, order = F,slot = 'data')
+
+FeaturePlot(pbmc, c('inflammatory','senescence','mTOR','mTORC1'),raster = T,
+            reduction = 'tsne',cols = colorRampPalette(c('grey','lightgrey','#FF4500'))(10),ncol = 2, order = F,slot = 'data')
+
+```
+
+
+```{r,fig.width=2.5,fig.height=2.5}
+for(i in c(paste0('GSVA.',c('INT',paste0('PY',1:3))),
+           'inflammatory','senescence','mTOR','mTORC1')){
+  fp = FeaturePlot(pbmc, i,raster = T,reduction = 'tsne',
+              cols = colorRampPalette(c('grey','lightgrey','#FF4500'))(10),
+              ncol = 1, order = F,slot = 'data') + theme_void()+
+    theme(plot.title = element_text(hjust = 0.5, size = 18),
+                                  legend.position = 'none',legend.title = element_blank())
+  print(fp)
+  assign(paste0(i,'.pbmc'),fp)
+}
+
+```
+
+```{r,fig.width=5,fig.height=5}
+tsne.pbmc = DimPlot(pbmc, reduction = 'tsne',label = T, group.by = 'CellType',raster = T) + labs(title = 'Kumar 2022 Nat.Neu') +
+  theme_void()+theme(plot.title = element_text(hjust = 0.5, size = 16),
+                                  legend.position = 'none',legend.title = element_blank())
+
+
+plot_grid(tsne.pbmc,inflammatory.pbmc,mTOR.pbmc,senescence.pbmc,ncol = 2)
+```
+
+
+
+
+
+## Chen Lab Patch-seq data
+```{r}
+load('~/project/ChenLab/result/rdata/Chen_197_cells_patchseq_seurat_obj.RData')
+
+sub.meta = Human_patch@meta.data[,c(paste0('GSVA.',c('INT',paste0('PY',1:3))),
+                                    'inflammatory','senescence','mTOR','mTORC1')]
+
+Human_patch@assays$RNA@data = rbind(Human_patch@assays$RNA@data,
+                                    as.matrix(t(sub.meta)))
+```
+
+```{r,fig.width=2.5,fig.height=2.5}
+for(i in c(paste0('GSVA.',c('INT',paste0('PY',1:3))),
+           'inflammatory','senescence','mTOR','mTORC1')){
+  fp = FeaturePlot(Human_patch, i,raster = F,reduction = 'umap',
+              cols = colorRampPalette(c('grey','lightgrey','#FF4500'))(10),
+              ncol = 1, order = T,slot = 'data') + theme_void()+
+    theme(plot.title = element_text(hjust = 0.5, size = 18),
+                                  legend.position = 'none',legend.title = element_blank())
+  print(fp)
+  assign(paste0(i,'.chen'),fp)
+}
+
+```
+
+
+```{r,fig.width=2.5,fig.height=2.5}
+umap.chen = DimPlot(Human_patch,label = T,group.by = 'SubType')+labs(title = 'This study') +
+  theme_void()+theme(plot.title = element_text(hjust = 0.5, size = 16),
+                                  legend.position = 'none',legend.title = element_blank())
+
+umap.chen
+```
+
+
+
+```{r}
+pdf('~/Project/ChenLab/Path-seq/figure/revision/Kumar_22_NatNeu/Kumar_22_NatNeu_PBMC_inflammatory_mTOR_signature_tSNE.pdf',5,5)
+plot_grid(tsne.pbmc,inflammatory.pbmc,mTOR.pbmc,senescence.pbmc,ncol = 2)
+dev.off()
+
+pdf('~/Project/ChenLab/Path-seq/figure/revision/Kumar_22_NatNeu/ChenLab_Patch_inflammatory_mTOR_signature_tSNE.pdf',5,5)
+plot_grid(umap.chen,inflammatory.chen,mTOR.chen,senescence.chen,ncol = 2)
+dev.off()
+```
+
+
+## focus on mTOR representative genes
+```{r,fig.width=9,fig.height=5}
+FeaturePlot(pbmc, c('RPS6','EIF4E','RHEB','CDKN1A','CCL2','NFKBIA'),raster = T,
+            reduction = 'tsne',cols = c('lightgrey','#FF4500'),ncol = 3, order = F,slot = 'data')
+
+FeaturePlot(immune, c('RPS6','EIF4E','RHEB','CDKN1A','CCL2','NFKBIA'),raster = T,
+            reduction = 'tsne',cols = c('lightgrey','#FF4500'),ncol = 3, order = F,slot = 'data')
+
+
+FeaturePlot(Human_patch, c('RPS6','EIF4E','RHEB','CDKN1A','CCL2','NFKBIA'),raster = F,
+            reduction = 'umap',cols = c('lightgrey','#FF4500'),ncol = 3, order = F,slot = 'data')
+```
+
+
+```{r,fig.width=2.5,fig.height=2.5}
+meta = Human_patch@meta.data
+
+for(i in c('RPS6','EIF4E','RHEB','CDKN1A','CCL2','NFKBIA')){
+    cellsReduction = as.data.frame(Embeddings(object = Human_patch, reduction = "umap"))
+    cellsReduction$expr = Human_patch@assays$RNA@data[i,]
+    toplot = Human_patch@assays$RNA@data[i,]
+    #target.cells = intersect(colnames(Human_patch),colnames(rare))
+    #if(i=='RPS6'){
+    #  target.cells = rownames(meta[meta$Subtype == 'PY2-like',])
+    #}else{
+     target.cells = rownames(meta[meta$SubType=='PY2',]) 
+   # }
+    
+    target = toplot[target.cells]
+    target = sort(target)
+    nontarget = colnames(Human_patch)[!colnames(Human_patch)%in%names(target)]
+    nontarget = toplot[nontarget]
+    nontarget = sort(nontarget,decreasing = T)
+    
+    bk = seq(0,max(toplot),length.out = 20)
+    
+    umap_cell = ggplot(cellsReduction[c(names(nontarget),names(target)),],
+                       aes(x=UMAP_1,y=UMAP_2,col=expr))+ geom_point(size=1)+
+    scale_color_gradientn(colors = colorRampPalette(c('lightgrey','#FF4500'))(20),
+                          limits = c(0,max(toplot)), breaks = bk)+
+    ggtitle(i)+theme_void()+theme(plot.title = element_text(hjust = 0.5, size = 16),
+                                  legend.position = 'none',legend.title = element_blank())
+assign(paste0(i,'.chen'),umap_cell)
+print(umap_cell)
+}
+```
+
+
+
+```{r,fig.width=2.5,fig.height=2.5}
+meta = pbmc@meta.data
+set.seed(2024)
+for(i in c('RPS6','EIF4E','RHEB','CDKN1A','CCL2','NFKBIA')){
+    cellsReduction = as.data.frame(Embeddings(object = pbmc, reduction = "tsne"))
+    cellsReduction$expr = pbmc@assays$RNA@data[i,]
+    toplot = pbmc@assays$RNA@data[i,]
+    
+    bk = seq(0,max(toplot),length.out = 10)
+    
+    umap_cell = ggplot(cellsReduction[sample(1:nrow(cellsReduction),size = nrow(cellsReduction)),],
+                       aes(x=tSNE_1,y=tSNE_2,col=expr))+ 
+      geom_point_rast(size=0.1,raster.dpi = getOption("ggrastr.default.dpi", 300))+
+    scale_color_gradientn(colors = colorRampPalette(c('lightgrey','#FF4500'))(10),
+                          limits = c(0,max(toplot)), breaks = bk)+
+    ggtitle(i)+theme_void()+theme(plot.title = element_text(hjust = 0.5, size = 16),
+                                  legend.position = 'none',legend.title = element_blank())
+assign(paste0(i,'.pbmc'),umap_cell)
+print(umap_cell)
+}
+```
+
+```{r,fig.width=7.5,fig.height=5}
+pdf('~/Project/ChenLab/Path-seq/figure/revision/Kumar_22_NatNeu/ChenLab_Patch_mTOR_genes_featureplot.pdf',7.5,5)
+plot_grid(RPS6.chen,EIF4E.chen,RHEB.chen,CDKN1A.chen,CCL2.chen,NFKBIA.chen,ncol = 3)
+dev.off()
+
+pdf('~/Project/ChenLab/Path-seq/figure/revision/Kumar_22_NatNeu/Kumar_22_NatNeurosci_mTOR_genes_featureplot.pdf',7.5,5)
+plot_grid(RPS6.pbmc,EIF4E.pbmc,RHEB.pbmc,CDKN1A.pbmc,CCL2.pbmc,NFKBIA.pbmc,ncol = 3)
+dev.off()
+```
+
