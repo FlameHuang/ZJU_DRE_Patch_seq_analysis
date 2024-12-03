@@ -1,0 +1,628 @@
+---
+title: "Integration_of_Chen_and_Allen_Patchseq"
+author: "HuangFei"
+date: "2023/10/8"
+output: html_document
+---
+
+```{r}
+load("~/project/ChenLab/result/rdata/Human_patch_part3.RData")
+Human_patch = NormalizeData(Human_patch)
+meta.info = read.csv('~/project/ChenLab/Path-seq/result/text/V2_ChenLab_Pathseq_197_cell_meta_info.csv', header = T)
+meta.info
+rownames(meta.info) = meta.info$cellID
+meta.info$Donor = substr(meta.info$cellID,1,8)
+table(meta.info$Donor)
+
+Human_patch@meta.data = meta.info
+getwd()
+save(Human_patch, file = '~/project/ChenLab/result/rdata/Chen_197_cells_patchseq_seurat_obj.RData')
+
+load('~/project/ChenLab/Path-seq/public_data/Allen_patchseq_data_seurat_obj.RData')
+table(Allen.patch$seurat_clusters)
+Allen.patch$SubType = Allen.patch$seurat_clusters
+```
+
+
+## Integration of Patch-seq data between Allen and Chen
+## Find integration anchors
+```{r}
+commone.genes = intersect(rownames(Human_patch), rownames(Allen.patch))
+
+Patch.list = list(Human_patch[commone.genes,], Allen.patch[commone.genes,])
+
+names(Patch.list) = c('Chen','Allen')
+
+features <- SelectIntegrationFeatures(object.list = Patch.list)
+
+CM.list <- lapply(Patch.list, FUN = function(x) {
+    x <- ScaleData(x, features = features, verbose = FALSE)
+    x <- RunPCA(x, features = features, verbose = FALSE)
+})
+
+anchors <- FindIntegrationAnchors(object.list = Patch.list,
+                                  reduction = "rpca",dims = 1:30)
+
+## integrate multiple datasets
+
+Patch.combined <- IntegrateData(anchorset = anchors, dims = 1:30)
+Patch.combined <- ScaleData(Patch.combined, verbose = F)
+```
+
+
+```{r}
+Patch.combined = merge(Human_patch[commone.genes,], Allen.patch[commone.genes,])
+Patch.combined@meta.data$Dataset = 'Chen'
+Patch.combined@meta.data[colnames(Allen.patch),]$Dataset = 'Allen'
+
+Patch.combined = NormalizeData(Patch.combined)
+Patch.combined = FindVariableFeatures(Patch.combined)
+Patch.combined = ScaleData(Patch.combined)
+```
+
+
+###PC selections
+```{r, fig.height=7.5,fig.width=7.5}
+#Patch.combined <- subset(Patch.combined, subset = nFeature_RNA > nGene & percent.mt < mt)
+DefaultAssay(Patch.combined) <- 'RNA'
+setwd('~/project/ChenLab/Path-seq/public_data/figure/Patch-seq/dm')
+#setwd('~/Project/Osteoclast/ZYX/Patch.combined/figure/dm')
+Patch.combined <- RunPCA(Patch.combined, npcs=50, verbose=F)
+Patch.combined = RunHarmony(Patch.combined, group.by.vars = 'Dataset')
+
+pdf('Harmony_heatmaps.pdf',7.5,7.5)
+DimHeatmap(Patch.combined, dims = 1:15,  balanced = TRUE,reduction = 'harmony')
+DimHeatmap(Patch.combined, dims = 16:30, balanced = TRUE,reduction = 'harmony')
+dev.off()
+```
+
+
+```{r,fig.width=5.5,fig.height=5}
+setwd('~/project/ChenLab/Path-seq/public_data/figure/Patch-seq/dm')
+pdf('Harmony_selection.pdf',5.5,5)
+ElbowPlot(Patch.combined, ndims = 30,reduction = 'harmony')
+  #geom_vline(mapping = aes(xintercept = 11), size = 1, color = 'red', linetype = 'dashed') +
+ # labs(title = paste0('PCA of ', ncol(Patch.combined), ' cells'))
+dev.off()
+```
+
+
+
+### Dimension reduction and Clustering
+```{r}
+# 20 PCs based on elbow plot
+npcs <- 1:11
+#npcs = 1:21
+Patch.combined <- RunUMAP(Patch.combined, dims = npcs, reduction = 'harmony')
+#Patch.combined = RunTSNE(Patch.combined, dims = npcs,reduction = 'harmony')
+Patch.combined <- FindNeighbors(Patch.combined, dims = npcs, reduction = 'harmony')
+
+Patch.combined <- FindClusters(Patch.combined, resolution = 0.1, reduction = 'harmony')
+table(Patch.combined@meta.data$seurat_clusters)
+```
+
+### clustering and UMAP
+```{r,fig.width=5,fig.height=4.5}
+setwd('~/Project/ChenLab/Path-seq/public_data/figure/Patch-seq/dm')
+Patch.combined <- FindClusters(Patch.combined, resolution = 0.2)
+
+pdf('Harmony_by_res0.2_cluster.pdf',4.8,4.5)
+DimPlot(Patch.combined, label = T, reduction = 'umap',label.size = 5,) + labs(title = '')
+dev.off()
+
+
+pdf('Harmony_by_DataSet.pdf',5,4.5)
+DimPlot(Patch.combined, label = T, reduction = 'umap',group.by = 'Dataset',label.size = 5,) + labs(title = '')
+dev.off()
+
+pdf('Harmony_by_SubType.pdf',5,4.5)
+set.seed(2020)
+DimPlot(Patch.combined, label = T, reduction = 'umap',group.by = 'SubType',label.size = 5,
+        label.box = F, cols = scales::hue_pal()(20)[sample(1:20,9)]) + labs(title = 'Integration of Chen and Allen Patch-seq')
+dev.off()
+```
+
+```{r,fig.width=5,fig.height=4.5}
+DimPlot(Patch.combined, label = T, reduction = 'umap') + labs(title = '')
+
+DimPlot(Patch.combined, label = T, reduction = 'umap',group.by = 'Dataset') + labs(title = '')
+
+set.seed(2021)
+DimPlot(Patch.combined, label = T, reduction = 'umap',group.by = 'SubType',label.size = 5,
+        label.box = F, cols = scales::hue_pal()(20)[sample(1:20,9)]) + labs(title = 'Integration of Chen and Allen Patch-seq')
+
+```
+
+```{r}
+save(Patch.combined, file = '~/Project/ChenLab/Path-seq/public_data/Allen_and_Chen_patchseq_integration.RData')
+```
+
+
+## load data
+```{r}
+load("C:/Users/FeiHuang/Documents/Project/ChenLab/Path-seq/public_data/Allen_an_Chen_patchseq_integration.RData")
+Patch.combined@meta.data = Patch.combined@meta.data[,c(1:54,57)]
+Patch.combined@meta.data = cbind(Patch.combined@meta.data, as.data.frame(Embeddings(Patch.combined,reduction = 'umap')))
+Patch.combined@meta.data
+```
+
+## reassign integration clusters
+```{r,fig.width=5,fig.height=4.6}
+meta = Patch.combined@meta.data
+meta[meta$seurat_clusters==0&meta$UMAP_1<4&meta$UMAP_2<0,'seurat_clusters'] = 2
+meta$SubType = plyr::revalue(meta$SubType,
+                                    c('0'='A1','1'='A2','2'='A3','3'='A4','4'='A5'))
+meta[,'Integration_cluster'] = meta$seurat_clusters
+meta[meta$seurat_clusters==4,'Integration_cluster'] = 1
+meta -> Patch.combined@meta.data
+
+DimPlot(Patch.combined, label = T, reduction = 'umap', group.by = 'Integration_cluster') 
+```
+
+### UMAP color by subtype and shape by dataset
+```{r,fig.width=5.2,fig.height=4.5}
+allen.colors = scales::hue_pal()(10)[c(5,10,7,3,2)]
+names(allen.colors) = paste0('A',1:5)
+chen.colors = scales::hue_pal()(4)[c(2,1,3,4)]
+names(chen.colors) = c('INT',paste0('PY',1:3))
+
+DimPlot(Patch.combined, label = T, reduction = 'umap',group.by = 'SubType',shape.by =  'Dataset',
+        label.size = 5,label.box = F, cols = c(allen.colors,chen.colors)) +labs(title = '')
+```
+
+
+### UMAP split by dataset
+```{r,fig.width=9,fig.height=4.5}
+DimPlot(Patch.combined, label = T, reduction = 'umap',group.by = 'SubType',split.by =  'Dataset',
+        label.size = 4,label.box = F, cols = c(allen.colors,chen.colors)) +labs(title = '')
+```
+
+```{r}
+setwd('~/Project/ChenLab/Path-seq/public_data/figure/Patch-seq/Integration/')
+pdf('UMAP_by_Integration_clusters.pdf',4.8,4.6)
+DimPlot(Patch.combined, label = T, reduction = 'umap', group.by = 'Integration_cluster') 
+dev.off()
+
+pdf('Integration_Allen_and_Chen_Patchseq_UMAP.pdf',5,4.5)
+DimPlot(Patch.combined, label = T, reduction = 'umap',group.by = 'SubType',shape.by =  'Dataset',
+        label.size = 5,label.box = F, cols = c(allen.colors,chen.colors)) +labs(title = '')
+dev.off()
+
+pdf('Split_Allen_and_Chen_Patchseq_UMAP.pdf',8.5,4.5)
+DimPlot(Patch.combined, label = T, reduction = 'umap',group.by = 'SubType',split.by =  'Dataset',
+        label.size = 4,label.box = F, cols = c(allen.colors,chen.colors)) +labs(title = '')
+dev.off()
+```
+
+
+## focus on PY1-like C0 and PY2-like C2
+```{r}
+Patch.combined = ScaleData(Patch.combined, features = rownames(Patch.combined))
+with(Patch.combined@meta.data, table(seurat_clusters,SubType))
+
+PY2 = subset(Patch.combined, SubType == 'PY2')
+PY2@meta.data[order(PY2@meta.data$seurat_clusters),c('seurat_clusters','UMAP_1','UMAP_2')]
+
+C0 = subset(Patch.combined, Integration_cluster == 0)
+table(C0$SubType)
+
+C1 = subset(Patch.combined, Integration_cluster == 1)
+table(C1$SubType)
+
+C2 = subset(Patch.combined, Integration_cluster == 2)
+table(C2$SubType)
+
+C3 = subset(Patch.combined, Integration_cluster == 3)
+table(C3$SubType)
+```
+
+## cluster fraction/percentage per group
+```{r,fig.width=8,fig.height=5}
+library(ggpubr)
+
+cell_table = as.data.frame(with(meta, table(SubType, Integration_cluster)))
+
+cell_table
+setDT(cell_table)
+cell_table = cell_table[Freq>0]
+cell_per = cell_table[,100*Freq/sum(Freq), by = .(Integration_cluster)]
+cell_per
+cell_per$SubType = cell_table$SubType
+
+cell_per
+
+compo_bar1 = ggbarplot(cell_per, x = 'Integration_cluster', y = 'V1', fill = 'SubType',
+        position = position_stack(), rotate = TRUE,width = 0.7,palette = c(allen.colors,chen.colors)) + 
+  labs( x ='',y='Percentage of cells (%)')  + my_theme + theme(legend.title = element_blank(),
+                                                              legend.position = 'right')
+
+compo_bar1
+
+
+```
+
+```{r,fig.width=8,fig.height=6}
+library(ggpubr)
+
+cell_table = as.data.frame(with(meta, table(SubType, Integration_cluster)))
+
+
+setDT(cell_table)
+cell_table = cell_table[Freq>0]
+cell_per = cell_table[,100*Freq/sum(Freq), by = .(SubType)]
+cell_table[order(SubType)]
+cell_per = cell_per[order(SubType)]
+cell_per$Integration_cluster = as.character(cell_table[order(SubType)]$Integration_cluster)
+
+cell_per
+
+compo_bar2 = ggbarplot(cell_per, x = 'SubType', y = 'V1', fill = 'Integration_cluster',
+        position = position_stack(), rotate = TRUE,width = 0.7) + 
+  labs( x ='',y='Percentage of cells (%)')  + my_theme + theme(legend.title = element_blank(),
+                                                              legend.position = 'right')
+
+compo_bar2
+```
+
+## GSVA estimation of Chen Lab PY1/2 markers
+```{r}
+chen.markers = fread('~/project/ChenLab/Path-seq/result/Path_seq_SubType_DEG_results.csv', header = T, sep = ',')
+table(chen.markers[pct.1>pct.2&p_val_adj<0.05&avg_log2FC>log2(1.5)]$cluster)
+
+sig.markers = chen.markers[pct.1>pct.2&p_val<0.05&avg_log2FC>log2(2)]
+#sig.markers = sig.markers[,head(.SD,100),by=.(cluster)]
+table(sig.markers$cluster)
+sig.markers[avg_log2FC>1&cluster=='PY2']
+
+gene.list = list(GSVA.INT = sig.markers[cluster=='INT']$gene,
+                 GSVA.PY1 = sig.markers[cluster=='PY1']$gene,
+                 GSVA.PY2 = sig.markers[cluster=='PY2']$gene,
+                 GSVA.PY3 = chen.markers[pct.1>pct.2&p_val<0.05&avg_log2FC>log2(1.5)][cluster=='PY3']$gene[1:100])
+```
+
+```{r}
+library(scales)
+library(GSVA)
+set.seed(123)
+
+gene.list = list(GSVA.INT = sig.markers[cluster=='INT']$gene,
+                 GSVA.PY1 = sig.markers[cluster=='PY1'&p_val_adj<0.05]$gene,
+                 GSVA.PY2 = sig.markers[cluster=='PY2']$gene,
+                 GSVA.PY3 = chen.markers[pct.1>pct.2&p_val<0.05&avg_log2FC>log2(1.5)][cluster=='PY3']$gene[1:100])
+
+
+mat = Patch.combined@assays$RNA@data
+  
+  chen.GSVA <- gsva(as.matrix(mat[rownames(mat)%in%unlist(gene.list),]), gset.idx.list = gene.list, kcdf="Gaussian",method = "gsva", parallel.sz=1)
+  #chen.GSVA <- gsva(mat, gset.idx.list = gene.list, kcdf="Poisson",method = "ssgsea", parallel.sz=1)
+  chen.GSVA.mat = t(apply(chen.GSVA,1,rescale))
+  Patch.combined@assays$RNA@data = rbind(Patch.combined@assays$RNA@data,chen.GSVA.mat)
+```
+
+```{r,fig.width=14,fig.height=3}
+int = VlnPlot(Patch.combined,c('GSVA.INT'),group.by = 'Integration_cluster',  ncol = 1, pt.size = 0)+ labs(x='',y='GSVA scores')+geom_boxplot(width=0.15,fill='white',outlier.shape = NA) + labs(x='') + 
+  theme(axis.text.x = element_text(size=16,angle = 0,hjust = 0.99,vjust = 0.99),legend.position = 'none')
+
+py1 = VlnPlot(Patch.combined,c('GSVA.PY1'),group.by = 'Integration_cluster', ncol = 1, pt.size = 0)+  labs(x='',y='GSVA scores')+geom_boxplot(width=0.15,fill='white',outlier.shape = NA) + labs(x='') + 
+  theme(axis.text.x = element_text(size=16,angle = 0,hjust = 0.99,vjust = 0.99),legend.position = 'none')
+
+py2 = VlnPlot(Patch.combined,c('GSVA.PY2'),group.by = 'Integration_cluster', ncol = 1, pt.size = 0)+  labs(x='',y='GSVA scores')+geom_boxplot(width=0.15,fill='white',outlier.shape = NA) + labs(x='') + 
+  theme(axis.text.x = element_text(size=16,angle = 0,hjust = 0.99,vjust = 0.99),legend.position = 'none')
+
+py3 = VlnPlot(Patch.combined,c('GSVA.PY3'),group.by = 'Integration_cluster', ncol = 1, pt.size = 0)+  labs(x='',y='GSVA scores')+geom_boxplot(width=0.15,fill='white',outlier.shape = NA) + labs(x='') + 
+  theme(axis.text.x = element_text(size=16,angle = 0,hjust = 0.99,vjust = 0.99),legend.position = 'none')
+
+FeaturePlot(Patch.combined, paste0('GSVA.',c('INT',paste0('PY',1:3))),
+            reduction = 'umap',cols = colorRampPalette(c('grey','lightgrey','#FF4500'))(10),ncol = 4, order = T,slot = 'data')
+
+FeaturePlot(Patch.combined, paste0('GSVA.',c('INT',paste0('PY',1:3))),
+            reduction = 'umap',cols = colorRampPalette(c('grey','lightgrey','#FF4500'))(10),ncol = 4, order = F,slot = 'data')
+
+```
+
+
+```{r}
+pdf('~/project/ChenLab/Path-seq/public_data/figure/Patch-seq/Integration/Chen_GSVA_score_VlnPlot_across_Integration_cluster.pdf',16,3)
+plot_grid(int,py1,py2,py3, ncol = 4)
+dev.off()
+
+pdf('~/project/ChenLab/Path-seq/public_data/figure/Patch-seq/Integration/Chen_GSVA_score_mapping_to_Integration_cluster.pdf',14,3)
+FeaturePlot(Patch.combined, paste0('GSVA.',c('INT',paste0('PY',1:3))),
+            reduction = 'umap',cols = viridis::viridis(10),ncol = 4, order = F,slot = 'data')
+dev.off()
+
+
+pdf('~/project/ChenLab/Path-seq/figure/AI/Fig2C_Chen_GSVA_score_mapping_to_Integration_cluster.pdf',14,3)
+FeaturePlot(Patch.combined, paste0('GSVA.',c('INT',paste0('PY',1:3))),
+            reduction = 'umap',cols = colorRampPalette(c('grey','lightgrey','#FF4500'))(10),ncol = 4, order = F,slot = 'data')
+dev.off()
+```
+
+## AUCell score
+```{r,fig.width=5,fig.height=4.5}
+library(AUCell)
+thrP = 0.01
+PopPer = 0.1
+dim(mat)
+cells_rankings <- AUCell_buildRankings(mat)
+
+names(gene.list) = gsub('GSVA','AUC',names(gene.list))
+
+set.seed(123)
+
+setwd('~/project/ChenLab/Path-seq/public_data/figure/Patch-seq/Integration')
+pdf('Integration_AUCell_distribution.pdf',5,4.5)
+cells_AUC <- AUCell_calcAUC(gene.list, cells_rankings, aucMaxRank=nrow(cells_rankings)*0.05)
+cells_assignment <- AUCell_exploreThresholds(cells_AUC, plotHist=TRUE, nCores=1, 
+                                             assign=TRUE,thrP=thrP,smallestPopPercent = PopPer)
+dev.off()
+
+selectedThresholds <- getThresholdSelected(cells_assignment)
+```
+
+
+### We assigned celltypes to the cells holding the AUC scors over thershold !
+```{r}
+### obtain UMAP projection to plot
+cellsReduction = as.data.frame(Embeddings(object = Patch.combined, reduction = "umap"))
+
+setwd('~/project/ChenLab/Path-seq/public_data/figure/Patch-seq/Integration')
+pdf('Integration_AUCell_FeaturePlot.pdf',5,4)
+for(geneSetName in names(selectedThresholds)){
+  
+  # Split cells according to their AUC value for the gene set
+  passThreshold <- getAUC(cells_AUC)[geneSetName,] >  selectedThresholds[geneSetName]
+
+    aucSplit <- split(getAUC(cells_AUC)[geneSetName,], passThreshold)
+    
+    cellsReduction$AUC = getAUC(cells_AUC)[geneSetName,]
+    
+    
+    # Plot
+    #plot(cellsReduction[order(cellsReduction$AUC),1:2], main=geneSetName,
+    #sub="Pink/red cells pass the threshold",
+    #col=cellColor[rownames(cellsReduction[order(cellsReduction$AUC),])], pch=16) 
+    
+    toplot = cellsReduction[order(cellsReduction$AUC),]
+   # if(geneSetName == 'PY2'){
+  #        toplot[toplot$AUC>0.4,]$AUC = 0.4
+   # }
+
+    umap_cell = ggplot(toplot,
+                        aes(x=UMAP_1,y=UMAP_2,col=AUC))+ geom_point(size=0.5)+
+       #scale_color_gradientn(colors = colorRampPalette(c('lightgrey', '#FF4500'))(20),limits = c(0,0.5), breaks = seq(0,0.5,length=6)) +
+      scale_color_gradient2(low = viridis::viridis(3)[1],
+                            mid = viridis::viridis(3)[2],
+                            high = viridis::viridis(3)[3]) +
+      #scale_color_gradient(low = 'lightgrey', high = '#FF4500') + 
+      my_theme+ggtitle(paste0(geneSetName,'\ncutoff: > ',signif(selectedThresholds[geneSetName],2)))
+     
+    # print(umap_cell)
+     assign(geneSetName,umap_cell)
+     if(sum(passThreshold) >0 ){
+       
+    passed = names(passThreshold[passThreshold>0])
+    cellsReduction$Identification = 'No'
+    cellsReduction[passed,]$Identification = 'YES'
+    
+    table(cellsReduction$Identification)
+    
+    umap_ident =  ggplot(cellsReduction[order(cellsReduction$AUC),], aes(x=UMAP_1,y=UMAP_2,col=Identification))+
+      geom_point(size=0.5)+scale_color_manual(values = c('lightgrey','#E64B35FF')) + my_theme+
+      ggtitle(paste0(geneSetName,'\ncutoff: > ',signif(selectedThresholds[geneSetName],2)))
+     
+    
+    print(umap_ident)
+  }
+} 
+dev.off()
+
+AUC.mat = t(apply(getAUC(cells_AUC),1,rescale))
+dim(AUC.mat)
+Patch.combined@assays$RNA@data = rbind(Patch.combined@assays$RNA@data,AUC.mat)
+```
+
+```{r,fig.width=14,fig.height=3}
+int = VlnPlot(Patch.combined,c('AUC.INT'),group.by = 'Integration_cluster',  ncol = 1, pt.size = 0)+ labs(x='',y='AUC scores')+geom_boxplot(width=0.15,fill='white',outlier.shape = NA) + labs(x='') + 
+  theme(axis.text.x = element_text(size=16,angle = 0,hjust = 0.99,vjust = 0.99),legend.position = 'none')
+
+py1 = VlnPlot(Patch.combined,c('AUC.PY1'),group.by = 'Integration_cluster', ncol = 1, pt.size = 0)+  labs(x='',y='AUC scores')+geom_boxplot(width=0.15,fill='white',outlier.shape = NA) + labs(x='') + 
+  theme(axis.text.x = element_text(size=16,angle = 0,hjust = 0.99,vjust = 0.99),legend.position = 'none')
+
+py2 = VlnPlot(Patch.combined,c('AUC.PY2'),group.by = 'Integration_cluster', ncol = 1, pt.size = 0)+  labs(x='',y='AUC scores')+geom_boxplot(width=0.15,fill='white',outlier.shape = NA) + labs(x='') + 
+  theme(axis.text.x = element_text(size=16,angle = 0,hjust = 0.99,vjust = 0.99),legend.position = 'none')
+
+py3 = VlnPlot(Patch.combined,c('AUC.PY3'),group.by = 'Integration_cluster', ncol = 1, pt.size = 0)+  labs(x='',y='AUC scores')+geom_boxplot(width=0.15,fill='white',outlier.shape = NA) + labs(x='') + 
+  theme(axis.text.x = element_text(size=16,angle = 0,hjust = 0.99,vjust = 0.99),legend.position = 'none')
+
+pdf('~/project/ChenLab/Path-seq/public_data/figure/Patch-seq/Integration/Chen_AUC_score_VlnPlot_across_Integration_cluster.pdf',16,3)
+plot_grid(int,py1,py2,py3, ncol = 4)
+dev.off()
+
+pdf('~/project/ChenLab/Path-seq/public_data/figure/Patch-seq/Integration/Chen_AUC_score_mapping_to_Integration_cluster.pdf',14,3)
+FeaturePlot(Patch.combined, paste0('AUC.',c('INT',paste0('PY',1:3))),
+            reduction = 'umap',cols = viridis::viridis(10),ncol = 4, order = F,slot = 'data')
+dev.off()
+
+
+```
+
+
+```{r,fig.width=15,fig.height=6}
+VlnPlot(Patch.combined, c('ACTB','GAPDH','CUX2','PTGS2','RPS6','CDKN1A'),
+        group.by =  'SubType',ncol = 3, slot = 'data',pt.size = 0,
+        cols = c(allen.colors,chen.colors))
+
+VlnPlot(Patch.combined, c('ACTB','GAPDH','CUX2','RPS6'),
+        group.by =  'SubType',ncol = 2, slot = 'scale.data',pt.size = 0,
+        cols = c(allen.colors,chen.colors))
+```
+
+
+# to show representative genes 
+## PY2 markers
+```{r,fig.width=12,fig.height=7.5}
+VlnPlot(C2, c('C3','C1QA','CCL2','CDKN1A','NFKBIA','RPS6','EIF4E','EGR2','RHEB'),
+        group.by =  'SubType',ncol = 3, slot = 'data',pt.size = 0,
+        cols = c(allen.colors[paste0('A',c(1,2,4))],chen.colors[paste0('PY',1:2)]))
+```
+
+
+```{r,fig.width=4,fig.height=3}
+C2 = subset(C2, SubType!='A4')
+VlnPlot(Patch.combined, 'RPS6', group.by =  'Integration_cluster',ncol = 1, slot = 'data',pt.size = 0)+
+  geom_boxplot(width=0.1,fill='grey',outlier.shape = NA) + labs(x='') + 
+   #stat_compare_means(comparisons = list(c('0','2'),c('1','2'),c('3','2')),font.label=list(size=14))+
+  theme(axis.text.x = element_text(size=16,angle = 45,hjust = 0.99,vjust = 0.99),legend.position = 'none')
+
+VlnPlot(C2, 'RPS6', group.by =  'SubType',ncol = 1, slot = 'data',pt.size = 0,
+        cols = c(allen.colors[paste0('A',c(1,2,4))],chen.colors[paste0('PY',1:2)]))+
+  geom_boxplot(width=0.1,fill='grey',outlier.shape = NA) + labs(x='') + 
+  theme(axis.text.x = element_text(size=16,angle = 45,hjust = 0.99,vjust = 0.99),legend.position = 'none')
+```
+
+
+
+```{r}
+spikie.mat =  Matrix::Matrix(data = as.matrix(ISnorm_res$normalized), sparse = TRUE)
+class(spikie.mat)
+
+Patch.combined@assays$RNA@data = spikie.mat
+```
+
+
+```{r,fig.width=3.8,fig.height=3}
+for(ge in c('C3','C1QA','CCL2','CDKN1A','NFKBIA','RPS6','EIF4E','EGR2','EGR3','JUN','RHEB','TPI1','ENO1','PGK1','PTGS2','TP53','IL1A','IL1B','CCL4','CCL2','CXCL8','CXCL12','LMNB1')){
+# v1= VlnPlot(Patch.combined, ge, group.by =  'Integration_cluster',ncol = 1, slot = 'data',pt.size = 0)+
+#  geom_boxplot(width=0.1,fill='white',outlier.shape = NA) + labs(x='') + 
+   #stat_compare_means(comparisons = list(c('0','2'),c('1','2'),c('3','2')),font.label=list(size=14))+
+#  theme(axis.text.x = element_text(size=16,angle = 0,hjust = 0.99,vjust = 0.99),legend.position = 'none')
+ v2 = VlnPlot(C2, ge, group.by =  'SubType',ncol = 1, slot = 'data',pt.size = 0,
+        cols = c(allen.colors[paste0('A',c(1,2))],chen.colors[paste0('PY',1:2)]))+
+  geom_boxplot(width=0.1,fill='grey',outlier.shape = NA) + labs(x='') + 
+   my_theme+
+  theme(axis.text.x = element_text(size=16,angle = 45,hjust = 0.99,vjust = 0.99),legend.position = 'none')
+ #assign(paste0(ge,'.all'),v1)
+ print(v2)
+ assign(paste0(ge,'.C2'),v2)
+}
+```
+
+
+```{r,fig.width=10,fig.height=7.5}
+pdf('~/project/ChenLab/Path-seq/public_data/figure/Patch-seq/Integration/PY2_marker_genes_across_Integration_clusters.pdf',10,7.5)
+plot_grid(RPS6.all,C3.all,C1QA.all,CCL2.all,CDKN1A.all,NFKBIA.all,EIF4E.all,EGR2.all,RHEB.all,ncol = 3)
+dev.off()
+```
+
+```{r,fig.width=10,fig.height=7.5}
+pdf('~/project/ChenLab/Path-seq/public_data/figure/Patch-seq/Integration/PY2_marker_genes_in_cluster2.pdf',10,7.5)
+plot_grid(RPS6.C2,C3.C2,C1QA.C2,CCL2.C2,CDKN1A.C2,NFKBIA.C2,EIF4E.C2,EGR2.C2,RHEB.C2,ncol = 3)
+dev.off()
+```
+
+## PY1 markers
+```{r}
+for(ge in c('CUX2','PTGS2','SATB2','SLC17A6','SLC17A7','LGI4')){
+ v1= VlnPlot(Patch.combined, ge, group.by =  'Integration_cluster',ncol = 1, slot = 'data',pt.size = 0)+
+  geom_boxplot(width=0.1,fill='white',outlier.shape = NA) + labs(x='') + 
+   #stat_compare_means(comparisons = list(c('0','2'),c('1','2'),c('3','2')),font.label=list(size=14))+
+  theme(axis.text.x = element_text(size=16,angle = 0,hjust = 0.99,vjust = 0.99),legend.position = 'none')
+
+ v2 = VlnPlot(C0, ge, group.by =  'SubType',ncol = 1, slot = 'data',pt.size = 0,
+        cols = c(allen.colors[paste0('A',c(1:5))],chen.colors[paste0('PY',1:3)]))+
+  geom_boxplot(width=0.1,fill='white',outlier.shape = NA) + labs(x='') + 
+  theme(axis.text.x = element_text(size=16,angle = 45,hjust = 0.99,vjust = 0.99),legend.position = 'none')
+ assign(paste0(ge,'.all'),v1)
+ assign(paste0(ge,'.C0'),v2)
+}
+```
+
+
+```{r,fig.width=10,fig.height=5}
+pdf('~/project/ChenLab/Path-seq/public_data/figure/Patch-seq/Integration/PY1_marker_genes_across_Integration_clusters.pdf',10,5)
+plot_grid(CUX2.all,PTGS2.all,SATB2.all,SLC17A6.all,SLC17A7.all,LGI4.all,ncol = 3)
+dev.off()
+```
+
+```{r,fig.width=12,fig.height=5}
+pdf('~/project/ChenLab/Path-seq/public_data/figure/Patch-seq/Integration/PY1_marker_genes_in_cluster2.pdf',12,5)
+plot_grid(CUX2.C0,PTGS2.C0,SATB2.C0,SLC17A6.C0,SLC17A7.C0,LGI4.C0,ncol = 3)
+dev.off()
+```
+
+## try to compare PY2 genes group by Subtypes, split by integration cluster
+```{r}
+VlnPlot(Patch.combined, c('RPS6'), split.by =  'SubType',ncol = 1,group.by = 'Integration_cluster', slot = 'data',pt.size = 0,split.plot = T,
+        cols = c(allen.colors[paste0('A',c(1,2,4))],chen.colors[paste0('PY',1:2)])) + 
+   geom_boxplot(width=0.1,fill='white',outlier.shape = NA) 
+```
+Split violin is only supported for <3 groups, using multi-violin.
+
+
+
+
+## normalization using ERCC
+```{r}
+library(ISnorm)
+library(dbscan)
+
+dim(mat)
+gene_dis<-calculate.dis(as.matrix(mat),detection_rate=0.90)
+spike_candidate<-dbscan.pick(dis=gene_dis,ngene=(1:floor(nrow(gene_dis)/25))*5)
+
+spike.res <- candidate.norm(mat=as.matrix(mat),spike_candidate=spike_candidate)
+
+spike.res$spike[[9]]
+
+ISnorm_res<-opt.candidate(mat=as.matrix(mat),candidate_res=spike.res)
+
+dim(ISnorm_res$normalized)
+
+mat[1:6,1:6]
+ISnorm_res$normalized[1:6,1:6]
+```
+
+```{r}
+Patch.mat = ISnorm_res$normalized
+Patch.melt = melt(as.matrix(Patch.mat[,]))
+
+head(Patch.melt)
+colnames(Patch.melt)[1:2] = c('gene','cellID')
+
+Patch.combined@meta.data$cellID = rownames(Patch.combined@meta.data)
+colnames(Patch.combined@meta.data)
+
+length(intersect(Patch.melt$cellID, Patch.combined@meta.data$cellID))
+
+Patch.melt = merge(Patch.melt, Patch.combined@meta.data[,c('cellID','Integration_cluster','SubType','Dataset')],
+                   by = 'cellID')
+
+setDT(Patch.melt)
+Patch.melt[,SubType:=factor(SubType,levels = c(names(allen.colors),names(chen.colors)))]
+```
+
+```{r,fig.width=5,fig.height=3}
+for(i in c('RPS6','ACTB','GAPDH')){
+   vp = ggviolin(Patch.melt[gene == i], x = 'SubType', y = 'value',fill = 'SubType',width = 1.5,
+                palette = c(allen.colors,chen.colors),trim = T) +
+    geom_boxplot(width=0.1,fill='white',outlier.shape = NA) + 
+  labs(x = '', y = 'Relative expression', title = i) +#  coord_cartesian(ylim=c(0,10)) 
+   my_theme + theme(legend.position = 'none')
+  print(vp)
+}
+```
+
+
+```{r,fig.width=12,fig.height=3}
+for(i in c('RPS6','ACTB','GAPDH')){
+   vp = ggviolin(Patch.melt[gene == i][SubType%in%c(paste0('A',c(1,2,4)),paste0('PY',1:2))], x = 'SubType', y = 'value',fill = 'SubType',width = 1.2,
+                palette = c(allen.colors[paste0('A',c(1,2,4))],chen.colors[paste0('PY',1:2)]),trim = T) +
+    geom_boxplot(width=0.1,fill='white',outlier.shape = NA) + 
+   facet_wrap(~Integration_cluster,ncol = 4)+
+  labs(x = '', y = 'Relative expression', title = i) +#  coord_cartesian(ylim=c(0,10)) 
+   my_theme + theme(legend.position = 'none')
+  print(vp)
+}
+
+```
