@@ -1,1 +1,1 @@
-This fold cotains a count matrix and a Seurat processed RData.
+This fold contains two csv files to show count matrix and meta information respectively.
