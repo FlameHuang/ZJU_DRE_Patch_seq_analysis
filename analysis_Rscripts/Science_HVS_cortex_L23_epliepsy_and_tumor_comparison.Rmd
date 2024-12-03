@@ -1,0 +1,1205 @@
+---
+title: "Science_HVS_cortex_L23_epliepsy_and_tumor_comparison"
+author: "HuangFei"
+date: "2023/10/15"
+output: html_document
+---
+
+srun -p short -N 1 --mem 64G --pty /bin/bash
+conda activate seurat
+### load dependence
+```{r}
+options(BioC_mirror="https://mirrors.tuna.tsinghua.edu.cn/bioconductor")
+options("repos" = c(CRAN="https://mirrors.tuna.tsinghua.edu.cn/CRAN/"))
+BiocManager::install("Pigengene")
+library('SingleR')
+library(data.table)
+library(Seurat)
+library(ggsci)
+library(cowplot)
+library(ggplot2)
+library(sctransform)
+library(ggpubr)
+library(harmony)
+library(scCustomize)
+
+my_theme <- theme(plot.title = element_text(hjust = 0.5, size = 17),
+                  legend.position = 'right',
+                  legend.title =element_text(size=16),
+                  legend.text = element_text(size=16),
+                  axis.text.x = element_text(size=16),
+                  axis.title.x = element_text(size=16),
+                  axis.title.y = element_text(size=16),
+                  axis.text.y  = element_text(size=16),
+                  panel.border = element_blank(),
+                  axis.line.x = element_line(size=0.25, color="black"),
+                  axis.line.y = element_line(size=0.25, color="black"),
+                  panel.grid.minor.x = element_blank(), panel.grid.minor.y = element_blank(),
+                  panel.grid.major.x = element_blank(), panel.grid.major.y = element_blank(),
+                  panel.background = element_rect(fill='white'),
+                  legend.key=element_blank(),
+                  strip.text.x = element_text(size=15),
+                  strip.text.y = element_text(size=15),
+                  strip.background = element_rect(colour = 'white', fill = 'white'))
+
+```
+
+## define a function to rename the feature names (gene names) in Seurat object
+```{r}
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+# RenameGenesSeurat  ------------------------------------------------------------------------------------
+RenameGenesSeurat <- function(obj = ls.Seurat[[i]]) { # Replace gene names in different slots of a Seurat object. Run this before integration. Run this before integration. It only changes obj@assays$RNA@counts, @data and @scale.data.
+  
+  print("Run this before integration. It only changes obj@assays$RNA@counts, @data and @scale.data.")
+  gene_name = mapIds(org.Hs.eg.db, keys = rownames(obj),
+                   keytype = 'ENSEMBL', column = 'SYMBOL')
+
+  geneID = data.table(ensembl=names(gene_name), symbol = gene_name)
+  geneID = geneID[!duplicated(symbol)][!is.na(symbol)]
+
+  obj = obj[geneID$ensembl,]
+  newnames = geneID$symbol
+  
+  RNA <- obj@assays$RNA
+  
+  if (nrow(RNA) == length(newnames)) {
+    if (length(RNA@counts)) RNA@counts@Dimnames[[1]]            <- newnames
+    if (length(RNA@data)) RNA@data@Dimnames[[1]]                <- newnames
+    if (length(RNA@scale.data)) RNA@scale.data@Dimnames[[1]]    <- newnames
+  } else {"Unequal gene sets: nrow(RNA) != nrow(newnames)"}
+  obj@assays$RNA <- RNA
+  return(obj)
+}
+```
+
+
+```{r}
+setwd('/share/home/shenlab/huangfei/project/ChenLab/Path-seq/public_data/Science_human_L23')
+HVS_L23 = readRDS("HVS_L23_neocortex_Seurat_obj.rds")
+HVS_L23 = RenameGenesSeurat(HVS_L23)
+meta = fread('human_variation metadata Supplementary_table1.csv', header = T, sep = ',')
+HSV.sample = unique(HVS_L23$donor_id)
+length(HSV.sample)
+78
+meta[donor%in%HSV.sample]
+75
+
+HVS.meta = HVS_L23@meta.data
+HVS.meta$cellID = rownames(HVS.meta)
+colnames(meta)[c(1,4)] = c('donor_id','diagnosis')
+HVS.meta = merge(HVS.meta, meta[,1:8], by = 'donor_id',all.x=T)
+HVS.meta$cellID -> rownames(HVS.meta)
+HVS.meta[is.na(HVS.meta$diagnosis),]$diagnosis = 'Unknown'
+HVS.meta -> HVS_L23@meta.data
+```
+notice add row.names to meta.data
+
+```{r}
+dis.colors = pal_jama()(3)[c(2,3,1)]
+
+setwd('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/dm')
+HVS_L23 <- FindNeighbors(HVS_L23)
+HVS_L23 = FindClusters(HVS_L23, resolution = 0.2)
+pdf('UMAP_by_cluster.pdf',4,4.5)
+DimPlot(HVS_L23, label = T, reduction = 'umap',group.by = 'seurat_clusters') 
+dev.off()
+
+
+
+pdf('UMAP_by_Supertype.pdf',5.5,4.5)
+DimPlot(HVS_L23, label = T, reduction = 'umap',group.by = 'Supertype')
+dev.off()
+
+pdf('UMAP_by_diagnosis.pdf',5,4.5)
+DimPlot(HVS_L23, label = T, reduction = 'umap',group.by = 'diagnosis', cols = dis.colors) + labs(title = '')
+dev.off()
+
+pdf('UMAP_by_donor.pdf',9,4.5)
+DimPlot(HVS_L23, label = F, reduction = 'umap',group.by = 'donor_id') + labs(title = '')
+dev.off()
+
+
+L23 = subset(HVS_L23,diagnosis=='Epilepsy'|diagnosis=='Tumor')
+
+pdf('UMAP_split_by_diagnosis.pdf',6,3.5)
+DimPlot(L23, label = T, reduction = 'umap',group.by = 'seurat_clusters',split.by = 'diagnosis') 
+dev.off()
+```
+
+
+## using harmony to
+```{r}
+HVS.mat = HVS_L23@assays$RNA@counts
+HVS_L23 = CreateSeuratObject(counts = HVS.mat, meta.data = HVS.meta)
+
+summary(HVS_L23$nFeature_RNA)
+summary(HVS_L23$nCount_RNA)
+```
+
+
+```{r, fig.height=7.5,fig.width=7.5}
+#HVS_L23 <- subset(HVS_L23, subset = nFeature_RNA > nGene & percent.mt < mt)
+DefaultAssay(HVS_L23) <- 'RNA'
+setwd('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/dm')
+#setwd('~/Project/Osteoclast/ZYX/HVS_L23/figure/dm')
+HVS_L23 = NormalizeData(HVS_L23)
+HVS_L23 = FindVariableFeatures(HVS_L23)
+HVS_L23 = ScaleData(HVS_L23)
+HVS_L23 <- RunPCA(HVS_L23, npcs=50, verbose=F)
+HVS_L23 = RunHarmony(HVS_L23, group.by.vars = 'donor_id')
+
+pdf('Harmony_heatmaps.pdf',7.5,7.5)
+DimHeatmap(HVS_L23, dims = 1:15,  balanced = TRUE,reduction = 'harmony',cells = 500)
+DimHeatmap(HVS_L23, dims = 16:30, balanced = TRUE,reduction = 'harmony',cells = 500)
+dev.off()
+
+pdf('Harmony_selection.pdf',5.5,5)
+ElbowPlot(HVS_L23, ndims = 30,reduction = 'harmony')
+  #geom_vline(mapping = aes(xintercept = 11), size = 1, color = 'red', linetype = 'dashed') +
+ # labs(title = paste0('PCA of ', ncol(HVS_L23), ' cells'))
+dev.off()
+```
+
+
+
+### Dimension reduction and Clustering
+```{r}
+# 20 PCs based on elbow plot
+npcs = 1:14
+npcs = 1:17
+npcs = 1:21
+npcs = c(1:14,16:17,19:21)
+
+HVS_L23 <- RunUMAP(HVS_L23, dims = npcs, min.dist = 0.3, n.neighbors = 30L, umap.method = 'uwot',reduction = 'harmony')
+#HVS_L23 = RunTSNE(HVS_L23, dims = npcs,reduction = 'harmony')
+HVS_L23 <- FindNeighbors(HVS_L23, dims = npcs,reduction = 'harmony')
+```
+
+```{r}
+dis.colors = pal_jama()(3)[c(2,3,1)]
+
+setwd('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/dm')
+HVS_L23 = FindClusters(HVS_L23, resolution = 0.2)
+pdf('Harmony_by_cluster.pdf',5,4.5)
+DimPlot(HVS_L23, label = T, reduction = 'umap',group.by = 'seurat_clusters') 
+dev.off()
+
+HVS_L23 = FindClusters(HVS_L23, resolution = 0.5)
+pdf('Harmony_by_Res0.5_cluster.pdf',5,4.5)
+DimPlot(HVS_L23, label = T, reduction = 'umap',group.by = 'RNA_snn_res.0.5') 
+dev.off()
+
+pdf('Harmony_by_Supertype.pdf',5.5,4.5)
+DimPlot(HVS_L23, label = T, reduction = 'umap',group.by = 'Supertype')
+dev.off()
+
+pdf('Harmony_by_diagnosis.pdf',5,4.5)
+DimPlot(HVS_L23, label = T, reduction = 'umap',group.by = 'diagnosis', cols = dis.colors) + labs(title = '')
+dev.off()
+
+pdf('Harmony_by_donor.pdf',9,4.5)
+DimPlot(HVS_L23, label = F, reduction = 'umap',group.by = 'donor_id') + labs(title = '')
+dev.off()
+
+
+jpeg('UMAP_colored_by_Supertype.jpg',width = 550,height = 450)
+DimPlot(HVS_L23, label = T, reduction = 'umap',group.by = 'Supertype')
+dev.off()
+
+meta = HVS_L23@meta.data
+meta$disease = meta$diagnosis
+meta[meta$diagnosis!='Epilepsy',]$disease = 'Non-epilepsy'
+meta -> HVS_L23@meta.data
+
+jpeg('UMAP_cluster_split_by_diagnosis.jpg',width = 800,height = 400)
+DimPlot(HVS_L23, label = T, reduction = 'umap', group.by = 'seurat_clusters',split.by = 'disease')
+dev.off()
+```
+
+```{r}
+save(HVS_L23, file = '~/project/ChenLab/Path-seq/public_data/Science_human_L23/HVS_L23_harmony_obj.RData')
+```
+
+## GSVA
+```{r}
+chen.markers = fread('~/project/ChenLab/Path-seq/result/Path_seq_SubType_DEG_results.csv', header = T, sep = ',')
+table(chen.markers[pct.1>pct.2&p_val_adj<0.05&avg_log2FC>log2(1.5)]$cluster)
+
+sig.markers = chen.markers[pct.1>pct.2&p_val<0.05&avg_log2FC>log2(2)]
+#sig.markers = sig.markers[,head(.SD,100),by=.(cluster)]
+table(sig.markers$cluster)
+sig.markers[avg_log2FC>1&cluster=='PY2']
+
+gene.list = list(GSVA.INT = sig.markers[cluster=='INT']$gene,
+                 GSVA.PY1 = sig.markers[cluster=='PY1']$gene,
+                 GSVA.PY2 = sig.markers[cluster=='PY2']$gene,
+                 GSVA.PY3 = chen.markers[pct.1>pct.2&p_val<0.05&avg_log2FC>log2(1.5)][cluster=='PY3']$gene[1:100])
+```
+
+
+## AUCell score
+```{r,fig.width=5,fig.height=4.5}
+library(AUCell)
+thrP = 0.01
+PopPer = 0.25
+dim(mat)
+cells_rankings <- AUCell_buildRankings(mat)
+
+names(gene.list) = gsub('GSVA','AUC',names(gene.list))
+
+set.seed(123)
+
+setwd('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/score')
+pdf('Sci_L23_whole_AUCell_distribution.pdf',5,4.5)
+cells_AUC <- AUCell_calcAUC(gene.list, cells_rankings, aucMaxRank=nrow(cells_rankings)*0.05)
+cells_assignment <- AUCell_exploreThresholds(cells_AUC, plotHist=TRUE, nCores=1, 
+                                             assign=TRUE,thrP=thrP,smallestPopPercent = PopPer)
+dev.off()
+
+selectedThresholds <- getThresholdSelected(cells_assignment)
+```
+
+
+### We assigned celltypes to the cells holding the AUC scors over thershold !
+```{r}
+### obtain UMAP projection to plot
+cellsReduction = as.data.frame(Embeddings(object = HVS_L23, reduction = "umap"))
+
+setwd('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/score')
+pdf('Sci_L23_AUCell_FeaturePlot.pdf',5.5,4.5)
+for(geneSetName in names(selectedThresholds)){
+  
+  # Split cells according to their AUC value for the gene set
+  passThreshold <- getAUC(cells_AUC)[geneSetName,] >  selectedThresholds[geneSetName]
+
+    aucSplit <- split(getAUC(cells_AUC)[geneSetName,], passThreshold)
+    
+    cellsReduction$AUC = getAUC(cells_AUC)[geneSetName,]
+    
+    
+    # Plot
+    #plot(cellsReduction[order(cellsReduction$AUC),1:2], main=geneSetName,
+    #sub="Pink/red cells pass the threshold",
+    #col=cellColor[rownames(cellsReduction[order(cellsReduction$AUC),])], pch=16) 
+    
+    toplot = cellsReduction[order(cellsReduction$AUC),]
+   # if(geneSetName == 'PY2'){
+  #        toplot[toplot$AUC>0.4,]$AUC = 0.4
+   # }
+
+    umap_cell = ggplot(toplot,
+                        aes(x=UMAP_1,y=UMAP_2,col=AUC))+ geom_point(size=0.5)+
+       #scale_color_gradientn(colors = colorRampPalette(c('lightgrey', '#FF4500'))(20),limits = c(0,0.5), breaks = seq(0,0.5,length=6)) +
+      scale_color_gradient2(low = viridis::viridis(3)[1],
+                            mid = viridis::viridis(3)[2],
+                            high = viridis::viridis(3)[3]) +
+      #scale_color_gradient(low = 'lightgrey', high = '#FF4500') + 
+      my_theme+ggtitle(paste0(geneSetName,'\ncutoff: > ',signif(selectedThresholds[geneSetName],2)))
+     
+    # print(umap_cell)
+     assign(geneSetName,umap_cell)
+     if(sum(passThreshold) >0 ){
+       
+    passed = names(passThreshold[passThreshold>0])
+    cellsReduction$Identification = 'No'
+    cellsReduction[passed,]$Identification = 'YES'
+    
+    table(cellsReduction$Identification)
+    
+    umap_ident =  ggplot(cellsReduction[order(cellsReduction$AUC),], aes(x=UMAP_1,y=UMAP_2,col=Identification))+
+      geom_point(size=0.5)+scale_color_manual(values = c('lightgrey','#E64B35FF')) + my_theme+
+      ggtitle(paste0(geneSetName,'\ncutoff: > ',signif(selectedThresholds[geneSetName],2)))
+     
+    
+    print(umap_ident)
+  }
+} 
+dev.off()
+```
+
+
+```{r}
+HVS_L23@assays$RNA@data = HVS_L23@assays$RNA@data[1:18078,]
+tmp = getAUC(cells_AUC)
+#tmp[3,] = 10*tmp[3,]
+AUC.mat = t(apply(tmp,1,rescale))
+HVS_L23@assays$RNA@data = rbind(HVS_L23@assays$RNA@data,AUC.mat)
+
+
+int = VlnPlot(HVS_L23,c('AUC.INT'),group.by = 'Supertype', split.by = 'diagnosis', ncol = 1, pt.size = 0,cols = dis.colors)+ labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+py1 = VlnPlot(HVS_L23,c('AUC.PY1'),group.by = 'Supertype', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors)+  labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+py2 = VlnPlot(HVS_L23,c('AUC.PY2'),group.by = 'Supertype', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors,y.max=0.05)+  labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+py3 = VlnPlot(HVS_L23,c('AUC.PY3'),group.by = 'Supertype', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors)+  labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+pdf('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/score/Chen_AUC_score_VlnPlot_in_Sci_L23.pdf',12,12)
+plot_grid(int,py1,py2,py3, ncol = 1)
+#Stacked_VlnPlot(seurat_object = HVS_L23, features = paste0('AUC.',c('INT',paste0('PY',1:3))),split.by = 'diagnosis',x_lab_rotate = TRUE,group.by = 'cluster',colors_use=pal_jama()(2))
+dev.off()
+
+
+pdf('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/score/Chen_AUC_score_mapping_to_Sci_L23.pdf',9,10)
+FeaturePlot(HVS_L23, paste0('AUC.',c('INT',paste0('PY',1:3))),split.by = 'diagnosis',
+            reduction = 'umap',cols = viridis::viridis(50),ncol = 3, order = F,slot = 'data')
+FeaturePlot(HVS_L23, paste0('AUC.',c('INT',paste0('PY',1:3))),split.by = 'diagnosis',
+            reduction = 'umap',cols = c('lightgrey','#FF4500'),ncol = 3, order = F,slot = 'data')
+dev.off()
+
+
+```
+
+```{r}
+int = VlnPlot(HVS_L23,c('AUC.INT'),group.by = 'seurat_clusters', split.by = 'diagnosis', ncol = 1, pt.size = 0,cols = dis.colors)+ labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+py1 = VlnPlot(HVS_L23,c('AUC.PY1'),group.by = 'seurat_clusters', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors)+  labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+py2 = VlnPlot(HVS_L23,c('AUC.PY2'),group.by = 'seurat_clusters', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors,y.max=0.05)+  labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+py3 = VlnPlot(HVS_L23,c('AUC.PY3'),group.by = 'seurat_clusters', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors)+  labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+pdf('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/score/Chen_AUC_score_VlnPlot_across_seurat_clusters.pdf',12,12)
+plot_grid(int,py1,py2,py3, ncol = 1)
+#Stacked_VlnPlot(seurat_object = HVS_L23, features = paste0('AUC.',c('INT',paste0('PY',1:3))),split.by = 'diagnosis',x_lab_rotate = TRUE,group.by = 'cluster',colors_use=pal_jama()(2))
+dev.off()
+
+```
+
+
+## FeaturePlot of PY2 AUC score 
+```{r}
+HVS_L23@assays$RNA@data = HVS_L23@assays$RNA@data[1:18078,]
+Epilepsy = subset(HVS_L23,diagnosis=='Epilepsy')
+Tumor = subset(HVS_L23,diagnosis=='Tumor')
+
+Epilepsy@assays$RNA@data = rbind(Epilepsy@assays$RNA@data,AUC.mat[,colnames(Epilepsy)])
+Tumor@assays$RNA@data = rbind(Tumor@assays$RNA@data,AUC.mat[,colnames(Tumor)])
+
+setwd('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/FeaturePlot')
+pdf('AUC_PY2_in_Epilepsy.pdf',4,3)
+
+#cellsReduction = as.data.frame(Embeddings(object = Epilepsy, reduction = "umap"))
+#    cellsReduction$AUC.PY2 = AUC.mat['AUC.PY2',colnames(Epilepsy)]
+    cellsReduction = Epilepsy@meta.data
+    toplot = cellsReduction[order(cellsReduction$AUC.PY2),]
+
+    bk <- unique(c(seq(0,.1, length=2), seq(0.2,1,length=4)))
+    bk = seq(0,1,length.out = 6)
+    py2.epi = ggplot(toplot,aes(x=UMAP_1,y=UMAP_2,col=AUC.PY2))+ geom_point(size=0.1)+
+    scale_color_gradientn(colors = colorRampPalette(c('lightgrey','#FF4500'))(10),limits = c(0,1), breaks = bk) +
+    ggtitle('Epilepsy')+my_theme
+print(py2.epi)
+dev.off()
+
+pdf('AUC_PY2_in_Tumor.pdf',4,3)
+
+#cellsReduction = as.data.frame(Embeddings(object = Tumor, reduction = "umap"))
+#    cellsReduction$AUC.PY2 = AUC.mat['AUC.PY2',colnames(Tumor)]
+    toplot = Tumor@meta.data#[order(cellsReduction$AUC),]
+    bk <- unique(c(seq(0,.1, length=2), seq(0.2,1,length=4)))
+    bk = seq(0,1,length.out = 6)
+    py2.tumor = ggplot(toplot,aes(x=UMAP_1,y=UMAP_2,col=AUC.PY2))+ geom_point(size=0.1)+
+    scale_color_gradientn(colors =colorRampPalette(c('lightgrey','#FF4500'))(10),limits = c(0,1), breaks = bk) +
+    ggtitle('Non-epilepsy')+my_theme
+print(py2.tumor)
+dev.off()
+```
+
+```{r}
+setwd('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/FeaturePlot')
+pdf('AUC_PY1_in_Epilepsy.pdf',4,3)
+
+#cellsReduction = as.data.frame(Embeddings(object = Epilepsy, reduction = "umap"))
+#    cellsReduction$AUC.PY1 = AUC.mat['AUC.PY1',colnames(Epilepsy)]
+    toplot = Epilepsy@meta.data#[order(cellsReduction$AUC),]
+
+    bk <- unique(c(seq(0,.8, length=5), seq(0.8,1,length=2)))
+    #bk = seq(0,1,length.out = 6)
+    py1.epi = ggplot(toplot,aes(x=UMAP_1,y=UMAP_2,col=AUC.PY1))+ geom_point(size=0.1)+
+    scale_color_gradientn(colors = c(colorRampPalette(c('grey','lightgrey','#FF4500'))(6)),limits = c(0,1), breaks = bk) +
+    ggtitle('Epilepsy')+my_theme
+print(py1.epi)
+dev.off()
+
+pdf('AUC_PY1_in_Tumor.pdf',4,3)
+
+#cellsReduction = as.data.frame(Embeddings(object = Tumor, reduction = "umap"))
+#    cellsReduction$AUC.PY1 = AUC.mat['AUC.PY1',colnames(Tumor)]
+    toplot = Tumor@meta.data#[order(cellsReduction$AUC),]
+     bk <- unique(c(seq(0,.8, length=5), seq(0.8,1,length=2)))
+    #bk = seq(0,1,length.out = 6)
+    py1.tumor = ggplot(toplot,aes(x=UMAP_1,y=UMAP_2,col=AUC.PY1))+ geom_point(size=0.1)+
+    scale_color_gradientn(colors =c(colorRampPalette(c('grey','lightgrey','#FF4500'))(6)),limits = c(0,1), breaks = bk) +
+    ggtitle('Non-epilepsy')+my_theme
+print(py1.tumor)
+dev.off()
+
+pdf('AUC_PY3_in_Epilepsy.pdf',4,3)
+
+#cellsReduction = as.data.frame(Embeddings(object = Epilepsy, reduction = "umap"))
+#    cellsReduction$AUC.PY3 = AUC.mat['AUC.PY3',colnames(Epilepsy)]
+    toplot = Epilepsy@meta.data#[order(cellsReduction$AUC),]
+
+    bk <- unique(c(seq(0,.8, length=5), seq(0.8,1,length=2)))
+    #bk = seq(0,1,length.out = 6)
+    py3.epi = ggplot(toplot,aes(x=UMAP_1,y=UMAP_2,col=AUC.PY3))+ geom_point(size=0.1)+
+    scale_color_gradientn(colors = c(colorRampPalette(c('grey','lightgrey','#FF4500'))(6)),limits = c(0,1), breaks = bk) +
+    ggtitle('Epilepsy')+my_theme
+print(py3.epi)
+dev.off()
+
+pdf('AUC_PY3_in_Tumor.pdf',4,3)
+
+#cellsReduction = as.data.frame(Embeddings(object = Tumor, reduction = "umap"))
+#    cellsReduction$AUC.PY3 = AUC.mat['AUC.PY3',colnames(Tumor)]
+    toplot = Tumor@meta.data#[order(cellsReduction$AUC),]
+   bk <- unique(c(seq(0,.8, length=5), seq(0.8,1,length=2)))
+    #bk = seq(0,1,length.out = 6)
+    py3.tumor = ggplot(toplot,aes(x=UMAP_1,y=UMAP_2,col=AUC.PY3))+ geom_point(size=0.1)+
+    scale_color_gradientn(colors =c(colorRampPalette(c('grey','lightgrey','#FF4500'))(6)),limits = c(0,1), breaks = bk) +
+    ggtitle('Non-epilepsy')+my_theme
+print(py3.tumor)
+dev.off()
+
+pdf('AUC_INT_in_Epilepsy.pdf',4,3)
+
+#cellsReduction = as.data.frame(Embeddings(object = Epilepsy, reduction = "umap"))
+#    cellsReduction$AUC.INT = AUC.mat['AUC.INT',colnames(Epilepsy)]
+    toplot = Epilepsy@meta.data#[order(cellsReduction$AUC),]
+
+    bk <- unique(c(seq(0,.8, length=5), seq(0.8,1,length=2)))
+    #bk = seq(0,1,length.out = 6)
+    int.epi = ggplot(toplot,aes(x=UMAP_1,y=UMAP_2,col=AUC.INT))+ geom_point(size=0.1)+
+    scale_color_gradientn(colors = c(colorRampPalette(c('grey','lightgrey','#FF4500'))(6)),limits = c(0,1), breaks = bk) +
+    ggtitle('Epilepsy')+my_theme
+print(int.epi)
+dev.off()
+
+pdf('AUC_INT_in_Tumor.pdf',4,3)
+
+#cellsReduction = as.data.frame(Embeddings(object = Tumor, reduction = "umap"))
+#    cellsReduction$AUC.INT = AUC.mat['AUC.INT',colnames(Tumor)]
+    toplot = Tumor@meta.data#[order(cellsReduction$AUC),]
+    bk <- unique(c(seq(0,.8, length=5), seq(0.8,1,length=2)))
+    #bk = seq(0,1,length.out = 6)
+    int.tumor = ggplot(toplot,aes(x=UMAP_1,y=UMAP_2,col=AUC.INT))+ geom_point(size=0.1)+
+    scale_color_gradientn(colors =c(colorRampPalette(c('grey','lightgrey','#FF4500'))(6)),limits = c(0,1), breaks = bk) +
+    ggtitle('Non-epilepsy')+my_theme
+print(int.tumor)
+dev.off()
+```
+
+```{r}
+pdf('AUC_score_between_Epilepsy_and_Tumor.pdf',16,6)
+plot_grid(int.epi,py1.epi,py2.epi,py3.epi,int.tumor,py1.tumor,py2.tumor,py3.tumor,ncol = 4)
+dev.off()
+```
+
+
+
+```{r}
+
+Epilepsy@assays$RNA@data = rbind(Epilepsy@assays$RNA@data,t(Epilepsy@meta.data[,c(paste0('AUC.',c('INT',paste0('PY',1:3))),paste0('GSVA.',c('INT',paste0('PY',1:3))))]))
+
+pdf('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/score/Chen_PY2_score_FeaturePlot.pdf',4,3)
+FeaturePlot(Epilepsy, 'AUC.PY2',reduction = 'umap',cols = viridis::viridis(50),ncol = 1, order = T,slot = 'data')+
+  geom_hline(yintercept = 2) + geom_hline(yintercept = 2.5)
+
+FeaturePlot(Epilepsy, 'GSVA.PY2',reduction = 'umap',cols = viridis::viridis(50),ncol = 1, order = T,slot = 'data')+
+  geom_hline(yintercept = 2) + geom_hline(yintercept = 2.5)
+dev.off()
+```
+
+
+## GSVA analysis of 
+```{r}
+options(stringsAsFactors = F)
+library(data.table)
+library(ggplot2)
+library(ggrastr)
+library(ggpubr)
+library(Seurat)
+library(ggsci)
+library(cowplot)
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(scales)
+library(GSVA)
+set.seed(123)
+
+my_theme <- theme(plot.title = element_text(hjust = 0.5, size = 18),
+                  legend.position = 'right',
+                  legend.title =element_text(size=16),
+                  legend.text = element_text(size=16),
+                  axis.text.x = element_text(size=16),
+                  axis.title.x = element_text(size=16),
+                  axis.title.y = element_text(size=16),
+                  axis.text.y  = element_text(size=16),
+                  panel.border = element_blank(),
+                  axis.line.x = element_line(size=0.25, color="black"),
+                  axis.line.y = element_line(size=0.25, color="black"),
+                  panel.grid.minor.x = element_blank(), panel.grid.minor.y = element_blank(),
+                  panel.grid.major.x = element_blank(), panel.grid.major.y = element_blank(),
+                  panel.background = element_rect(fill='white'),
+                  legend.key=element_blank(),
+                  strip.text.x = element_text(size=15),
+                  strip.text.y = element_text(size=15),
+                  strip.background = element_rect(colour = 'white', fill = 'white'))
+
+load('~/project/ChenLab/Path-seq/public_data/Science_human_L23/HVS_L23_harmony_obj.RData')
+#HVS_L23 = RenameGenesSeurat(HVS_L23)
+gene.list = list(GSVA.INT = sig.markers[cluster=='INT']$gene,
+                 GSVA.PY1 = sig.markers[cluster=='PY1']$gene,
+                 GSVA.PY2 = sig.markers[cluster=='PY2']$gene,
+                 GSVA.PY3 = chen.markers[pct.1>pct.2&p_val<0.05&avg_log2FC>log2(1.5)][cluster=='PY3']$gene[1:100])
+
+
+mat = HVS_L23@assays$RNA@data
+  
+ # chen.GSVA <- gsva(as.matrix(mat), gset.idx.list = gene.list, kcdf="Gaussian",method = "gsva", parallel.sz=4)
+  chen.GSVA <- gsva(mat, gset.idx.list = gene.list, kcdf="Poisson",method = "ssgsea", parallel.sz=1)
+  GSVA.mat = t(apply(chen.GSVA,1,rescale))
+  HVS_L23@assays$RNA@data = rbind(HVS_L23@assays$RNA@data,GSVA.mat)
+```
+
+```{r}
+pdf('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/score/Chen_GSVA_score_mapping_to_Sci_L23.pdf',9,10)
+FeaturePlot(HVS_L23, paste0('GSVA.',c('INT',paste0('PY',1:3))),split.by = 'diagnosis',
+            reduction = 'umap',cols = viridis::viridis(50),ncol = 3, order = F,slot = 'data')
+FeaturePlot(HVS_L23, paste0('GSVA.',c('INT',paste0('PY',1:3))),split.by = 'diagnosis',
+            reduction = 'umap',cols = c('lightgrey','#FF4500'),ncol = 3, order = F,slot = 'data')
+dev.off()
+```
+
+## FeaturePlot of PY2 GSVA score 
+```{r}
+HVS_L23@assays$RNA@data = HVS_L23@assays$RNA@data[1:18078,]
+Epilepsy = subset(HVS_L23,diagnosis=='Epilepsy')
+Tumor = subset(HVS_L23,diagnosis=='Tumor')
+
+Epilepsy@assays$RNA@data = rbind(Epilepsy@assays$RNA@data,t(Epilepsy@meta.data[,c(paste0('AUC.',c('INT',paste0('PY',1:3))),paste0('GSVA.',c('INT',paste0('PY',1:3))))]))
+                                                                               
+Tumor@assays$RNA@data = rbind(Tumor@assays$RNA@data,t(Tumor@meta.data[,c(paste0('AUC.',c('INT',paste0('PY',1:3))),paste0('GSVA.',c('INT',paste0('PY',1:3))))]))
+
+colnames(Epilepsy@meta.data)[40:43] <- gsub('GSVA.','',colnames(Epilepsy@meta.data)[40:43]) -> colnames(Tumor@meta.data)[40:43]
+
+setwd('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/FeaturePlot')
+pdf('GSVA_PY2_in_Epilepsy.pdf',4,3)
+
+#cellsReduction = as.data.frame(Embeddings(object = Epilepsy, reduction = "umap"))
+#    cellsReduction$PY2 = mat['PY2',colnames(Epilepsy)]
+    cellsReduction = Epilepsy@meta.data
+    toplot = cellsReduction[order(cellsReduction$PY2),]
+
+    bk <- unique(c(seq(0,.1, length=2), seq(0.2,1,length=4)))
+    bk = seq(0,1,length.out = 6)
+    py2.epi = ggplot(toplot,aes(x=UMAP_1,y=UMAP_2,col=PY2))+ #geom_point(size=0.1)+
+    geom_point_rast(size=0.1,raster.dpi = getOption("ggrastr.default.dpi", 300))+
+    scale_color_gradientn(colors = colorRampPalette(c('grey','lightgrey','#FF4500'))(10),limits = c(0,1), breaks = bk) +
+    ggtitle('Epilepsy')+my_theme
+print(py2.epi)
+dev.off()
+
+pdf('GSVA_PY2_in_Tumor.pdf',4,3)
+
+#cellsReduction = as.data.frame(Embeddings(object = Tumor, reduction = "umap"))
+#    cellsReduction$PY2 = mat['PY2',colnames(Tumor)]
+    toplot = Tumor@meta.data#[order(cellsReduction$GSVA),]
+    bk <- unique(c(seq(0,.1, length=2), seq(0.2,1,length=4)))
+    bk = seq(0,1,length.out = 6)
+    py2.tumor = ggplot(toplot,aes(x=UMAP_1,y=UMAP_2,col=PY2))+ #geom_point(size=0.1)+
+    geom_point_rast(size=0.1,raster.dpi = getOption("ggrastr.default.dpi", 300))+
+    scale_color_gradientn(colors =c(colorRampPalette(c('grey','lightgrey','#FF4500'))(6)),limits = c(0,1), breaks = bk) +
+    ggtitle('Non-epilepsy')+my_theme
+print(py2.tumor)
+dev.off()
+
+setwd('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/FeaturePlot')
+pdf('GSVA_PY1_in_Epilepsy.pdf',4,3)
+
+#cellsReduction = as.data.frame(Embeddings(object = Epilepsy, reduction = "umap"))
+#    cellsReduction$PY1 = mat['PY1',colnames(Epilepsy)]
+    toplot = Epilepsy@meta.data#[order(cellsReduction$GSVA),]
+    toplot$PY1 = toplot$PY1/1.1
+    bk <- unique(c(seq(0,.8, length=5), seq(0.8,1,length=2)))
+    #bk = seq(0,1,length.out = 6)
+    py1.epi = ggplot(toplot,aes(x=UMAP_1,y=UMAP_2,col=PY1))+ #geom_point(size=0.1)+
+    geom_point_rast(size=0.1,raster.dpi = getOption("ggrastr.default.dpi", 300))+
+    scale_color_gradientn(colors = c(colorRampPalette(c('grey','lightgrey','#FF4500'))(10)),limits = c(0,1), breaks = bk) +
+    ggtitle('Epilepsy')+my_theme
+print(py1.epi)
+dev.off()
+
+pdf('GSVA_PY1_in_Tumor.pdf',4,3)
+
+#cellsReduction = as.data.frame(Embeddings(object = Tumor, reduction = "umap"))
+#    cellsReduction$PY1 = mat['PY1',colnames(Tumor)]
+    toplot = Tumor@meta.data#[order(cellsReduction$GSVA),]
+    toplot$PY1 = toplot$PY1/1.1
+     bk <- unique(c(seq(0,.8, length=5), seq(0.8,1,length=2)))
+    #bk = seq(0,1,length.out = 6)
+    py1.tumor = ggplot(toplot,aes(x=UMAP_1,y=UMAP_2,col=PY1))+ #geom_point(size=0.1)+
+    geom_point_rast(size=0.1,raster.dpi = getOption("ggrastr.default.dpi", 300))+
+    scale_color_gradientn(colors =c(colorRampPalette(c('grey','lightgrey','#FF4500'))(10)),limits = c(0,1), breaks = bk) +
+    ggtitle('Non-epilepsy')+my_theme
+print(py1.tumor)
+dev.off()
+
+pdf('GSVA_PY3_in_Epilepsy.pdf',4,3)
+
+#cellsReduction = as.data.frame(Embeddings(object = Epilepsy, reduction = "umap"))
+#    cellsReduction$PY3 = mat['PY3',colnames(Epilepsy)]
+    toplot = Epilepsy@meta.data#[order(cellsReduction$GSVA),]
+
+    bk <- unique(c(seq(0,.8, length=5), seq(0.8,1,length=2)))
+    #bk = seq(0,1,length.out = 6)
+    toplot$PY3 = toplot$PY3/1.3
+    py3.epi = ggplot(toplot,aes(x=UMAP_1,y=UMAP_2,col=PY3))+ #geom_point(size=0.1)+
+    geom_point_rast(size=0.1,raster.dpi = getOption("ggrastr.default.dpi", 300))+
+    scale_color_gradientn(colors = c(colorRampPalette(c('grey','lightgrey','#FF4500'))(10)),limits = c(0,1), breaks = bk) +
+    ggtitle('Epilepsy')+my_theme
+print(py3.epi)
+dev.off()
+
+pdf('GSVA_PY3_in_Tumor.pdf',4,3)
+
+#cellsReduction = as.data.frame(Embeddings(object = Tumor, reduction = "umap"))
+#    cellsReduction$PY3 = mat['PY3',colnames(Tumor)]
+    toplot = Tumor@meta.data#[order(cellsReduction$GSVA),]
+   bk <- unique(c(seq(0,.8, length=5), seq(0.8,1,length=2)))
+    #bk = seq(0,1,length.out = 6)
+   toplot$PY3 = toplot$PY3/1.3
+    py3.tumor = ggplot(toplot,aes(x=UMAP_1,y=UMAP_2,col=PY3))+ #geom_point(size=0.1)+
+    geom_point_rast(size=0.1,raster.dpi = getOption("ggrastr.default.dpi", 300))+
+    scale_color_gradientn(colors =c(colorRampPalette(c('grey','lightgrey','#FF4500'))(10)),limits = c(0,1), breaks = bk) +
+    ggtitle('Non-epilepsy')+my_theme
+print(py3.tumor)
+dev.off()
+
+pdf('GSVA_INT_in_Epilepsy.pdf',4,3)
+
+#cellsReduction = as.data.frame(Embeddings(object = Epilepsy, reduction = "umap"))
+#    cellsReduction$INT = mat['INT',colnames(Epilepsy)]
+    toplot = Epilepsy@meta.data#[order(cellsReduction$GSVA),]
+
+    bk <- unique(c(seq(0,.8, length=5), seq(0.8,1,length=2)))
+    #bk = seq(0,1,length.out = 6)
+    int.epi = ggplot(toplot,aes(x=UMAP_1,y=UMAP_2,col=INT))+ #geom_point(size=0.1)+
+    geom_point_rast(size=0.1,raster.dpi = getOption("ggrastr.default.dpi", 300))+
+    scale_color_gradientn(colors = c(colorRampPalette(c('grey','lightgrey','#FF4500'))(6)),limits = c(0,1), breaks = bk) +
+    ggtitle('Epilepsy')+my_theme
+print(int.epi)
+dev.off()
+
+pdf('GSVA_INT_in_Tumor.pdf',4,3)
+
+#cellsReduction = as.data.frame(Embeddings(object = Tumor, reduction = "umap"))
+#    cellsReduction$INT = mat['INT',colnames(Tumor)]
+    toplot = Tumor@meta.data#[order(cellsReduction$GSVA),]
+    bk <- unique(c(seq(0,.8, length=5), seq(0.8,1,length=2)))
+    #bk = seq(0,1,length.out = 6)
+    int.tumor = ggplot(toplot,aes(x=UMAP_1,y=UMAP_2,col=INT))+ #geom_point(size=0.1)+
+    geom_point_rast(size=0.1,raster.dpi = getOption("ggrastr.default.dpi", 300))+
+    scale_color_gradientn(colors =c(colorRampPalette(c('grey','lightgrey','#FF4500'))(6)),limits = c(0,1), breaks = bk) +
+    ggtitle('Non-epilepsy')+my_theme
+print(int.tumor)
+dev.off()
+
+pdf('GSVA_score_between_Epilepsy_and_Tumor.pdf',16,6)
+plot_grid(int.epi,py1.epi,py2.epi,py3.epi,int.tumor,py1.tumor,py2.tumor,py3.tumor,ncol = 4)
+dev.off()
+
+
+jpeg('GSVA_score_between_Epilepsy_and_Tumor.jpg',width = 1600, height = 600)
+plot_grid(int.epi,py1.epi,py2.epi,py3.epi,int.tumor,py1.tumor,py2.tumor,py3.tumor,ncol = 4)
+dev.off()
+```
+
+
+## adding GSVA and AUC scores to meta info
+```{r}
+HVS_L23@meta.data = do.call(cbind, list(HVS_L23@meta.data,
+                                        as.data.frame(t(GSVA.mat)),
+                                        as.data.frame(t(AUC.mat))))
+```
+
+
+## extrac the rare population of PY2-like cells in Epilepsy
+```{r}
+meta = HVS_L23@meta.data
+meta$Subtype = as.character(meta$seurat_clusters)
+meta[meta$AUC.PY2>0.3&meta$seurat_clusters==3,'Subtype'] = 'PY2-like'
+meta[meta$GSVA.PY2>0.5&meta$seurat_clusters==3,'Subtype'] = 'PY2-like'
+table(meta[meta$Subtype=='PY2-like',]$Supertype)
+meta -> HVS_L23@meta.data
+
+setwd('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/dm')
+pdf('Harmony_by_Subtype.pdf',5,4.5)
+DimPlot(HVS_L23, label = T, reduction = 'umap',group.by = 'Subtype') 
+dev.off()
+```
+
+## Comparison of PY2-like cells between epilepsy vs non-epilepsy
+```{r}
+Epilepsy.meta = Epilepsy@meta.data
+setDT(Epilepsy.meta)
+
+nrow(Epilepsy.meta[GSVA.PY2>0.7&seurat_clusters==3])/nrow(Epilepsy.meta)
+##198; 0.003892504
+nrow(Epilepsy.meta[AUC.PY2>0.3&seurat_clusters==3])/nrow(Epilepsy.meta)
+##317; 0.006231938
+
+Tumor.meta = Tumor@meta.data
+setDT(Tumor.meta)
+Tumor.meta[GSVA.PY2>0.5&seurat_clusters==3]
+nrow(Tumor.meta[GSVA.PY2>0.7&seurat_clusters==3])/nrow(Tumor.meta)
+##53; 0.002195799
+nrow(Tumor.meta[AUC.PY2>0.3&seurat_clusters==3])/nrow(Tumor.meta)
+##100;0.004143017
+
+epi_vs_tumor = matrix(c(317,50550,100,24037),ncol=2)
+
+fisher.test(epi_vs_tumor)
+```
+
+```{r}
+toplot = data.frame(diagnosis = c('Epilepsy','Non-epilepsy'),
+                    num = c(317,100), per = c(0.6231938,0.4143017))
+
+setwd('/share/home/shenlab/huangfei/project/ChenLab/Path-seq/public_data/Science_human_L23/figure')
+pdf('PY2-like_cell_number_barplot.pdf',4,4)
+ggbarplot(toplot,x='diagnosis',y='num',fill = 'diagnosis',palette = dis.colors[1:2],
+          xlab = '',ylab = 'Number of PY2-like cells',width = 0.5) + ylim(c(0,370))+ 
+  annotate('text', x = 1.5, y = 360,label = 'p-value = 0.00027',size=6) + geom_segment(x=1,y=340,xend=2, yend = 340)+
+  my_theme + theme(legend.position = 'none')
+dev.off()
+
+pdf('PY2-like_cell_percentage_barplot.pdf',4,4)
+ggbarplot(toplot,x='diagnosis',y='per',fill = 'diagnosis',palette = dis.colors[1:2],
+          xlab = '',ylab = 'Percentage of PY2-like cells (%)',width = 0.5) + ylim(c(0,0.8))+ 
+  annotate('text', x = 1.5, y = 0.75,label = 'odds ratio = 1.5',size=6) + geom_segment(x=1,y=0.7,xend=2, yend = 0.7)+
+  my_theme + theme(legend.position = 'none')
+dev.off()
+```
+
+
+```{r}
+meta = HVS_L23@meta.data
+meta$Subtype = as.character(meta$seurat_clusters)
+meta[meta$AUC.PY2>0.3&meta$seurat_clusters==3,'Subtype'] = 'PY2-like'
+meta -> HVS_L23@meta.data
+rare = subset(HVS_L23, Subtype=='PY2-like'&diagnosis!='Unknown')
+rare.meta = rare@meta.data
+rare.meta$diagnosis = gsub('Tumor','Non-epilepsy',rare.meta$diagnosis )
+rare.meta -> rare@meta.data
+rare@assays$RNA@data = rbind(rare@assays$RNA@data,t(rare@meta.data[,c(paste0('AUC.',c('INT',paste0('PY',1:3))),paste0('GSVA.',c('INT',paste0('PY',1:3))))]))
+
+auc = VlnPlot(rare,c('AUC.PY2'),group.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors[1:2],y.max = 1.1)+ 
+   stat_compare_means(comparisons = list(c('Epilepsy','Non-epilepsy')),method = 'wilcox.test')+
+  geom_boxplot(width=0.15,fill='grey',outlier.shape = NA) + labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+setwd('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/score/')
+pdf('PY2_like_cluster_AUC_score_VlnPlot.pdf',3.5,3.5)
+print(auc)
+dev.off()
+```
+
+```{r}
+meta = HVS_L23@meta.data
+meta$Subtype = as.character(meta$seurat_clusters)
+meta[meta$GSVA.PY2>0.6&meta$seurat_clusters==3,'Subtype'] = 'PY2-like'
+meta -> HVS_L23@meta.data
+rare = subset(HVS_L23, Subtype=='PY2-like'&diagnosis!='Unknown')
+rare.meta = rare@meta.data
+rare.meta$diagnosis = gsub('Tumor','Non-epilepsy',rare.meta$diagnosis )
+rare.meta -> rare@meta.data
+rare@assays$RNA@data = rbind(rare@assays$RNA@data,t(rare@meta.data[,c(paste0('AUC.',c('INT',paste0('PY',1:3))),paste0('GSVA.',c('INT',paste0('PY',1:3))))]))
+
+gsv = VlnPlot(rare,c('GSVA.PY2'),group.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors[1:2],y.max = 1.1)+ 
+   stat_compare_means(comparisons = list(c('Epilepsy','Non-epilepsy')),method = 'wilcox.test')+
+  geom_boxplot(width=0.15,fill='grey',outlier.shape = NA) + labs(x='',y='GSVA scores')+theme(legend.position = 'none')
+
+setwd('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/score/')
+pdf('PY2_like_cluster_GSVA_score_VlnPlot.pdf',3.5,3.5)
+print(gsv)
+dev.off()
+```
+
+
+```{r}
+meta = HVS_L23@meta.data
+
+meta = cbind(meta, as.data.frame(Embeddings(HVS_L23,'umap')))
+
+meta$cellID = rownames(meta); setDT(meta)
+
+table(meta[GSVA.PY2>0.5]$diagnosis)
+summary(meta[GSVA.PY2>0.5&seurat_clusters==3]$UMAP_1)
+summary(meta[GSVA.PY2>0.5&seurat_clusters==3]$UMAP_2)
+
+meta$Subtype = as.character(meta$seurat_clusters)
+meta[meta$seurat_clusters==3&meta$UMAP_2>2.5&meta$UMAP_2<4,'Subtype'] = 'rare'
+#meta[GSVA.PY2>0.5&meta$seurat_clusters==3&meta$UMAP_1>(0)&meta$UMAP_1<3&meta$UMAP_2>2&meta$UMAP_2<4,'Subtype'] = 'rare'
+setDF(meta); rownames(meta) = meta$cellID
+meta -> HVS_L23@meta.data
+
+setwd('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/dm')
+pdf('Harmony_by_Subtype.pdf',5,4.5)
+DimPlot(HVS_L23, label = T, reduction = 'umap',group.by = 'Subtype') 
+dev.off()
+
+HVS_L23@assays$RNA@data = rbind(HVS_L23@assays$RNA@data,t(meta[,c(paste0('AUC.',c('INT',paste0('PY',1:3))),paste0('GSVA.',c('INT',paste0('PY',1:3))))]))
+
+int = VlnPlot(HVS_L23,c('AUC.INT'),group.by = 'Subtype', split.by = 'diagnosis', ncol = 1, pt.size = 0,cols = dis.colors)+ labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+py1 = VlnPlot(HVS_L23,c('AUC.PY1'),group.by = 'Subtype', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors)+  labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+py2 = VlnPlot(HVS_L23,c('AUC.PY2'),group.by = 'Subtype', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors)+  labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+py3 = VlnPlot(HVS_L23,c('AUC.PY3'),group.by = 'Subtype', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors)+  labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+pdf('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/score/Chen_AUC_score_VlnPlot_across_Subtype.pdf',12,12)
+plot_grid(int,py1,py2,py3, ncol = 1)
+#Stacked_VlnPlot(seurat_object = HVS_L23, features = paste0('AUC.',c('INT',paste0('PY',1:3))),split.by = 'diagnosis',x_lab_rotate = TRUE,group.by = 'cluster',colors_use=pal_jama()(2))
+dev.off()
+
+
+int = VlnPlot(HVS_L23,c('GSVA.INT'),group.by = 'Subtype', split.by = 'diagnosis', ncol = 1, pt.size = 0,cols = dis.colors)+ labs(x='',y='GSVA scores')+theme(legend.position = 'none')
+
+py1 = VlnPlot(HVS_L23,c('GSVA.PY1'),group.by = 'Subtype', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors)+  labs(x='',y='GSVA scores')+theme(legend.position = 'none')
+
+py2 = VlnPlot(HVS_L23,c('GSVA.PY2'),group.by = 'Subtype', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors)+  labs(x='',y='GSVA scores')+theme(legend.position = 'none')
+
+py3 = VlnPlot(HVS_L23,c('GSVA.PY3'),group.by = 'Subtype', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors)+  labs(x='',y='GSVA scores')+theme(legend.position = 'none')
+
+pdf('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/score/Chen_GSVA_score_VlnPlot_across_Subtype.pdf',12,12)
+plot_grid(int,py1,py2,py3, ncol = 1)
+#Stacked_VlnPlot(seurat_object = HVS_L23, features = paste0('GSVA.',c('INT',paste0('PY',1:3))),split.by = 'diagnosis',x_lab_rotate = TRUE,group.by = 'cluster',colors_use=pal_jama()(2))
+dev.off()
+
+mean(meta[Subtype=='rare'&diagnosis=='Epilepsy']$GSVA.PY2)
+mean(meta[Subtype=='rare'&diagnosis=='Tumor']$GSVA.PY2)
+mean(meta[Subtype=='rare'&diagnosis=='Unknown']$GSVA.PY2)
+
+median(meta[Subtype=='rare'&diagnosis=='Epilepsy']$GSVA.PY2)
+median(meta[Subtype=='rare'&diagnosis=='Tumor']$GSVA.PY2)
+median(meta[Subtype=='rare'&diagnosis=='Unknown']$GSVA.PY2)
+
+mean(meta[Subtype=='rare'&diagnosis=='Epilepsy']$AUC.PY2)
+mean(meta[Subtype=='rare'&diagnosis=='Tumor']$AUC.PY2)
+mean(meta[Subtype=='rare'&diagnosis=='Unknown']$AUC.PY2)
+
+median(meta[Subtype=='rare'&diagnosis=='Epilepsy']$AUC.PY2)
+median(meta[Subtype=='rare'&diagnosis=='Tumor']$AUC.PY2)
+median(meta[Subtype=='rare'&diagnosis=='Unknown']$AUC.PY2)
+
+t.test(meta[Subtype=='rare'&diagnosis=='Epilepsy']$AUC.PY2,meta[Subtype=='rare'&diagnosis=='Tumor']$AUC.PY2)
+```
+
+
+```{r}
+rare1 = subset(HVS_L23, Subtype=='rare'&diagnosis!='Epilepsy')
+rare1.meta = rare1@meta.data
+rare1.meta$diagnosis = gsub('Tumor','Epilepsy',rare1.meta$diagnosis )
+rare1.meta$diagnosis = gsub('Unknown','Tumor',rare1.meta$diagnosis )
+rare1.meta -> rare1@meta.data
+rare1@assays$RNA@data = rbind(rare1@assays$RNA@data,t(rare1@meta.data[,c(paste0('AUC.',c('INT',paste0('PY',1:3))),paste0('GSVA.',c('INT',paste0('PY',1:3))))]))
+
+gsv = VlnPlot(rare1,c('GSVA.PY2'),group.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors[1:2],y.max = 1.1)+ 
+   stat_compare_means(comparisons = list(c('Epilepsy','Tumor')),method = 'wilcox.test')+
+  geom_boxplot(width=0.15,fill='grey',outlier.shape = NA) + labs(x='',y='GSVA scores')+theme(legend.position = 'none')
+
+rare2 = subset(HVS_L23, Subtype=='rare'&diagnosis!='Unknown')
+rare2@assays$RNA@data = rbind(rare2@assays$RNA@data,t(rare2@meta.data[,c(paste0('AUC.',c('INT',paste0('PY',1:3))),paste0('GSVA.',c('INT',paste0('PY',1:3))))]))
+
+auc = VlnPlot(rare2,c('AUC.PY2'),group.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors[1:2],y.max = 1.1)+ 
+   stat_compare_means(comparisons = list(c('Epilepsy','Tumor')),method = 'wilcox.test')+
+  geom_boxplot(width=0.15,fill='grey',outlier.shape = NA) + labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+setwd('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/score/')
+pdf('Rare_cluster_PY2_score_VlnPlot.pdf',3.5,3.5)
+print(gsv)
+print(auc)
+dev.off()
+```
+
+
+```{r}
+rare1 = subset(HVS_L23, seurat_clusters==3&diagnosis!='Epilepsy')
+rare1.meta = rare1@meta.data
+rare1.meta$diagnosis = gsub('Tumor','Epilepsy',rare1.meta$diagnosis )
+rare1.meta$diagnosis = gsub('Unknown','Tumor',rare1.meta$diagnosis )
+rare1.meta -> rare1@meta.data
+rare1@assays$RNA@data = rbind(rare1@assays$RNA@data,t(rare1@meta.data[,c(paste0('AUC.',c('INT',paste0('PY',1:3))),paste0('GSVA.',c('INT',paste0('PY',1:3))))]))
+
+gsv = VlnPlot(rare1,c('GSVA.PY2'),group.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors[1:2],y.max = 1.1)+ 
+   stat_compare_means(comparisons = list(c('Epilepsy','Tumor')),method = 'wilcox.test')+
+  geom_boxplot(width=0.15,fill='grey',outlier.shape = NA) + labs(x='',y='GSVA scores')+theme(legend.position = 'none')
+
+rare2 = subset(HVS_L23, seurat_clusters==3&diagnosis!='Tumor')
+rare2.meta = rare2@meta.data
+rare2.meta$diagnosis = gsub('Unknown','Tumor',rare2.meta$diagnosis )
+rare2.meta -> rare2@meta.data
+rare2@assays$RNA@data = rbind(rare2@assays$RNA@data,t(rare2@meta.data[,c(paste0('AUC.',c('INT',paste0('PY',1:3))),paste0('GSVA.',c('INT',paste0('PY',1:3))))]))
+
+auc = VlnPlot(rare2,c('AUC.PY2'),group.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors[1:2],y.max = 1.1)+ 
+   stat_compare_means(comparisons = list(c('Epilepsy','Tumor')),method = 'wilcox.test')+
+  geom_boxplot(width=0.15,fill='grey',outlier.shape = NA) + labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+setwd('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/score/')
+pdf('cluster3_PY2_score_VlnPlot.pdf',3.5,3.5)
+print(gsv)
+print(auc)
+dev.off()
+```
+
+
+##
+```{r}
+rare = subset(HVS_L23, Subtype=='rare')
+table(rare$Supertype)
+## 2387 
+
+C3 = subset(HVS_L23, seurat_clusters==3)
+table(C3$Supertype)
+#L2/3 IT_1  L2/3 IT_6 L2/3 IT_10
+
+C3@assays$RNA@data = rbind(C3@assays$RNA@data,t(C3@meta.data[,c(paste0('AUC.',c('INT',paste0('PY',1:3))),paste0('GSVA.',c('INT',paste0('PY',1:3))))]))
+
+int = VlnPlot(C3,c('AUC.INT'),group.by = 'Supertype', split.by = 'diagnosis', ncol = 1, pt.size = 0,cols = dis.colors)+ labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+py1 = VlnPlot(C3,c('AUC.PY1'),group.by = 'Supertype', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors)+  labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+py2 = VlnPlot(C3,c('AUC.PY2'),group.by = 'Supertype', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors,y.max=1)+  labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+py3 = VlnPlot(C3,c('AUC.PY3'),group.by = 'Supertype', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors)+  labs(x='',y='AUC scores')+theme(legend.position = 'none')
+
+pdf('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/score/Cluster3_Chen_AUC_score_VlnPlot.pdf',12,12)
+plot_grid(int,py1,py2,py3, ncol = 1)
+dev.off()
+
+int = VlnPlot(C3,c('GSVA.INT'),group.by = 'Supertype', split.by = 'diagnosis', ncol = 1, pt.size = 0,cols = dis.colors)+ labs(x='',y='GSVA scores')+theme(legend.position = 'none')
+
+py1 = VlnPlot(C3,c('GSVA.PY1'),group.by = 'Supertype', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors)+  labs(x='',y='GSVA scores')+theme(legend.position = 'none')
+
+py2 = VlnPlot(C3,c('GSVA.PY2'),group.by = 'Supertype', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors,y.max=1)+  labs(x='',y='GSVA scores')+theme(legend.position = 'none')
+
+py3 = VlnPlot(C3,c('GSVA.PY3'),group.by = 'Supertype', split.by = 'diagnosis',ncol = 1, pt.size = 0,cols = dis.colors)+  labs(x='',y='GSVA scores')+theme(legend.position = 'none')
+
+pdf('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/score/Cluster3_Chen_GSVA_score_VlnPlot.pdf',12,12)
+plot_grid(int,py1,py2,py3, ncol = 1)
+dev.off()
+```
+
+### obtain hallmark terms
+```{r,warning=FALSE}
+library(clusterProfiler)
+library(DOSE)
+library(msigdbr)
+#m_df <- msigdbr(species = "Mus musculus")
+#head(m_df, 6) %>% as.data.frame
+
+H_database <- msigdbr(species = "Homo sapiens", category = "H") %>% 
+  dplyr::select(gs_name, gene_symbol)
+head(H_database)
+unique(H_database$gs_name)
+mTOR = H_database[grep('HALLMARK_MTORC1_SIGNALING',H_database$gs_name),]$gene_symbol
+mTOR
+
+PI3K_AKT_MTOR = H_database[grep("HALLMARK_PI3K_AKT_MTOR_SIGNALING",H_database$gs_name),]$gene_symbol
+PI3K_AKT_MTOR
+
+infla = H_database[grep('HALLMARK_INFLAMMATORY_RESPONSE',H_database$gs_name),]$gene_symbol
+infla
+
+C2_database <- msigdbr(species = "Homo sapiens", category = "C2") %>% 
+  dplyr::select(gs_name, gene_symbol)
+head(C2_database)
+unique(C2_database$gs_name)
+
+senescence = C2_database[grep('FRIDMAN_SENESCENCE_UP',C2_database$gs_name),]$gene_symbol
+senescence
+
+unique(C2_database[grep('MTOR',C2_database$gs_name),'gs_name'])
+
+mTOR = C2_database[grep('BIOCARTA_MTOR_PATHWAY|KEGG_MTOR_SIGNALING_PATHWAY|REACTOME_MTOR_SIGNALLING',C2_database$gs_name),]$gene_symbol
+#mTOR = C2_database[grep('KEGG_MTOR_SIGNALING_PATHWAY',C2_database$gs_name),]$gene_symbol
+mTOR
+length(mTOR)
+```
+
+```{r}
+cluster.markers = FindAllMarkers(HVS_L23, only.pos = T)
+setDT(cluster.markers)
+
+Idents(HVS_L23) = 'Subtype'
+subtype.markers = FindAllMarkers(HVS_L23, only.pos = T,logfc.threshold = 0.1)
+setDT(subtype.markers)
+
+py2.markers = sig.markers[cluster=='PY2']$gene
+
+table(cluster.markers[gene%in%py2.markers]$cluster)
+table(subtype.markers[gene%in%py2.markers]$cluster)
+
+py2inC3 = cluster.markers[gene%in%py2.markers&cluster==3][order(-avg_log2FC)]
+py2inC3[gene%in%mTOR]
+
+py2inrare = subtype.markers[gene%in%py2.markers&cluster=='rare'][order(-avg_log2FC)]
+py2inrare[gene%in%mTOR]
+py2inrare[gene%in%senescence]
+```
+
+### highly-expressed PY2 genes in rare population
+```{r,fig.width=9,fig.height=7.5}
+setwd('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/FeaturePlot')
+meta = Epilepsy@meta.data
+
+for(i in c(paste0('RPS',c(2,3,5,6,7,8,15,19,23,24)),'TPI1','PPIA','ENO1','PGK1',
+           'CORO1A','GUK1','PEA15','PEBP1','FTH1','TMSB4X','SELENOW','HSP90AB1','UBB')){
+    cellsReduction = as.data.frame(Embeddings(object = Epilepsy, reduction = "umap"))
+    cellsReduction$expr = Epilepsy@assays$RNA@data[i,]
+    toplot = Epilepsy@assays$RNA@data[i,]
+    #target.cells = intersect(colnames(Epilepsy),colnames(rare))
+    if(i=='RPS6'){
+      target.cells = rownames(meta[meta$Subtype == 'PY2-like',])
+    }else{
+     target.cells = rownames(meta[meta$seurat_clusters==3,]) 
+    }
+    
+    target = toplot[target.cells]
+    target = sort(target)
+    nontarget = colnames(Epilepsy)[!colnames(Epilepsy)%in%names(target)]
+    nontarget = toplot[nontarget]
+    nontarget = sort(nontarget,decreasing = T)
+    
+    umap_cell = ggplot(cellsReduction[c(names(nontarget),names(target)),],aes(x=UMAP_1,y=UMAP_2,col=expr))+ geom_point(size=0.1)+
+    scale_color_gradient(low = 'lightgrey',high = '#FF4500') +
+    ggtitle(i)+my_theme+theme(legend.position = 'right',legend.title = element_blank())
+assign(paste0('Epi',i),umap_cell)
+}
+
+pdf('HVS_Epilepsy_PY2_markers_featurePlot.pdf',9,5)
+plot_grid(RPS6,TPI1,PPIA,ENO1,PGK1,CORO1A,ncol = 3)
+plot_grid(PEBP1,FTH1,TMSB4X,SELENOW,HSP90AB1,UBB,ncol = 3)
+dev.off()
+
+pdf('PY2_markers_featurePlot.pdf',9,5)
+FeaturePlot(Epilepsy, c('C3','C1QA','CDKN1A','EGR2','EIF4E','NFKBIA','RHEB'),
+            reduction = 'umap',cols = c('lightgrey','#FF4500'),ncol = 3, order = T,slot = 'data')
+plot_grid(RPS3,RPS5,RPS7,RPS8,RPS15,RPS23,ncol = 3)
+plot_grid(RPS6,TPI1,PPIA,ENO1,PGK1,CORO1A,ncol = 3)
+plot_grid(PEBP1,FTH1,TMSB4X,SELENOW,HSP90AB1,UBB,ncol = 3)
+dev.off()
+```
+
+
+```{r,fig.width=9,fig.height=7.5}
+setwd('~/project/ChenLab/Path-seq/public_data/Science_human_L23/figure/FeaturePlot')
+meta = Tumor@meta.data
+
+for(i in c(paste0('RPS',c(2,3,5,6,7,8,15,19,23,24)),'TPI1','PPIA','ENO1','PGK1',
+           'CORO1A','GUK1','PEA15','PEBP1','FTH1','TMSB4X','SELENOW','HSP90AB1','UBB')){
+    cellsReduction = as.data.frame(Embeddings(object = Tumor, reduction = "umap"))
+    cellsReduction$expr = Tumor@assays$RNA@data[i,]
+    toplot = Tumor@assays$RNA@data[i,]
+    #target.cells = intersect(colnames(Tumor),colnames(rare))
+    if(i=='RPS6'){
+      target.cells = rownames(meta[meta$Subtype == 'PY2-like',])
+    }else{
+     target.cells = rownames(meta[meta$seurat_clusters==3,]) 
+    }
+    target = toplot[target.cells]
+    target = sort(target,decreasing = T)
+    #target = target[sample(1:length(target),size=length(target))]
+    nontarget = colnames(Tumor)[!colnames(Tumor)%in%names(target)]
+    nontarget = toplot[nontarget]
+    nontarget = sort(nontarget,decreasing = T)
+    
+    umap_cell = ggplot(cellsReduction[c(names(nontarget),names(target)),],aes(x=UMAP_1,y=UMAP_2,col=expr))+ geom_point(size=0.1)+
+    scale_color_gradient(low = 'lightgrey',high = '#FF4500') +
+    ggtitle(i)+my_theme+theme(legend.position = 'right',legend.title = element_blank())
+assign(paste0('tumor',i),umap_cell)
+}
+
+pdf('HVS_Tumor_PY2_markers_featurePlot.pdf',9,5)
+plot_grid(RPS6,TPI1,PPIA,ENO1,PGK1,CORO1A,ncol = 3)
+plot_grid(PEBP1,FTH1,TMSB4X,SELENOW,HSP90AB1,UBB,ncol = 3)
+dev.off()
+
+```
+
+```{r}
+jpeg('mTOR_genes_FeaturePlot_between_Epilepsy_and_Tumor.jpg',width = 1400, height = 600)
+plot_grid(EpiRPS6,EpiTPI1,EpiENO1,EpiPGK1,
+          tumorRPS6,tumorTPI1,tumorENO1,tumorPGK1,ncol = 4)
+dev.off()
+```
+
+
+
+## using integration (huge memory)
+## re-cluster of FB
+```{r}
+L23.list = SplitObject(HVS_L23,split.by = 'donor_id')
+
+names(L23.list)
+
+
+L23.list <- lapply(X = L23.list, FUN = function(x) {
+    x <- NormalizeData(x, verbose = FALSE)
+    x <- FindVariableFeatures(x, verbose = FALSE)
+})
+
+```
+
+
+## select and scale variable features in integration 
+```{r}
+features <- SelectIntegrationFeatures(object.list = L23.list)
+L23.list <- lapply(L23.list, FUN = function(x) {
+    x <- ScaleData(x, features = features, verbose = FALSE)
+    x <- RunPCA(x, features = features, verbose = FALSE)
+})
+```
+
+## Find integration anchors
+```{r}
+anchors <- FindIntegrationAnchors(object.list = L23.list,
+                                  reduction = "rpca",dims = 1:30)
+```
+
+## integrate multiple datasets
+```{r}
+L23.inter <- IntegrateData(anchorset = anchors, dims = 1:30)
+L23.inter <- ScaleData(L23.inter, verbose = F)
+```
+
+
+## PC selections
+#### heatmaps of PCs
+```{r, fig.height=8,fig.width=9}
+L23.inter = RunPCA(L23.inter)
+DimHeatmap(L23.inter, dims = 1:15, cells = 500, balanced = TRUE,reduction = 'pca')
+DimHeatmap(L23.inter, dims = 16:30, cells = 500, balanced = TRUE,reduction = 'pca')
+```
+
+### variation and standard deviation of PCs
+```{r,fig.width=6,fig.height=5}
+ElbowPlot(L23.inter, ndims = 20,reduction = 'pca')
+```
+
+## dimension reduction and clustering
+```{r,fig.width=10,fig.height=4}
+dims = 1:15
+#dims = 1:12
+
+DefaultAssay(L23.inter) = 'integrated'
+L23.inter <- RunUMAP(L23.inter, reduction = 'pca', dims=dims)
+
+L23.inter <- RunTSNE(L23.inter, reduction = 'pca', dims=dims,check_duplicates = FALSE)
+L23.inter <- FindNeighbors(L23.inter, reduction = 'pca', dims=dims)
+### from 0.3 to 0.1
+L23.inter <- FindClusters(L23.inter, resolution = 0.15)
+```
