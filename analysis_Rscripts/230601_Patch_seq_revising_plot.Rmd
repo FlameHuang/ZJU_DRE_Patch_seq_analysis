@@ -1,0 +1,795 @@
+---
+title: "230601_Path_seq_revise_plot"
+author: "HuangFei"
+date: "2023/6/2"
+output: html_document
+---
+
+```{r}
+set.seed(1000)
+library(data.table)
+library(Seurat)
+library(DOSE)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(ggsci)
+library(ggpubr)
+library(ggplot2)
+library(DOSE)
+library(AnnotationDbi)
+library(pheatmap)
+library(RColorBrewer)
+
+my_theme <- theme(plot.title = element_text(hjust = 0.5, size = 17),
+                  legend.position = 'right',
+                  legend.title =element_text(size=15),
+                  legend.text = element_text(size=15),
+                  axis.text.x = element_text(size=16),
+                  axis.title.x = element_text(size=16),
+                  axis.title.y = element_text(size=16),
+                  axis.text.y  = element_text(size=16),
+                  panel.border = element_blank(),
+                  axis.line.x = element_line(size=0.25, color="black"),
+                  axis.line.y = element_line(size=0.25, color="black"),
+                  panel.grid.minor.x = element_blank(), panel.grid.minor.y = element_blank(),
+                  panel.grid.major.x = element_blank(), panel.grid.major.y = element_blank(),
+                  panel.background = element_rect(fill='white'),
+                  legend.key=element_blank(),
+                  strip.text.x = element_text(size=15),
+                  strip.text.y = element_text(size=15),
+                  strip.background = element_rect(colour = 'white', fill = 'white'))
+
+
+run_KEGG_human = function(candidate_gene, background_gene = NULL, gene_format = 'SYMBOL', cutoff=0.05,
+                    showCategory = 20, font.size = 10,title = 'KEGG enrichment'){
+  diff_gene_ID<-clusterProfiler::bitr(candidate_gene, fromType = gene_format, toType ="ENTREZID", OrgDb="org.Hs.eg.db")
+
+  if(is.null(background_gene)){
+    ekegg<-enrichKEGG(gene=diff_gene_ID$ENTREZID, organism = 'hsa',
+                      pAdjustMethod = "BH",
+                      qvalueCutoff =  cutoff,
+                      pvalueCutoff = cutoff)
+  }else{
+    background_gene = clusterProfiler::bitr(background_gene, fromType = gene_format, toType ="ENTREZID", OrgDb="org.Hs.eg.db")
+  ekegg<-enrichKEGG(gene=diff_gene_ID$ENTREZID, organism = 'hsa',
+                    universe  = background_gene$ENTREZID,
+                    pAdjustMethod = "BH",
+                    qvalueCutoff =cutoff,
+                    pvalueCutoff = cutoff)
+  }
+  #ekegg <- setReadable(ekegg, OrgDb = org.Mm.eg.db, keytype = "ENTREZID")
+  ekegg.table = as.data.frame(ekegg)
+  if(nrow(ekegg.table)>0){
+    ekegg.table = ekegg.table[order(ekegg.table$p.adjust),]
+    print(ekegg.table$Description)
+    print(dotplot(ekegg, showCategory = showCategory, font.size = font.size, x='Count', title= title))
+  }
+  return(ekegg)
+}
+
+run_GO_human = function(candidate_gene, background_gene=NULL, gene_format = 'SYMBOL', ontology = 'BP', cutoff=0.05,
+                  showCategory=10,font.size=10,title = 'GO enrichment'){
+  diff_gene_ID<-clusterProfiler::bitr(candidate_gene, fromType = gene_format, toType ="ENTREZID", OrgDb="org.Hs.eg.db")
+  if(is.null(background_gene)){
+    ego <-  simplify(enrichGO(gene = diff_gene_ID$ENTREZID,  OrgDb = org.Hs.eg.db,
+                    keyType = 'ENTREZID', ont = ontology, readable = T,
+                    pAdjustMethod = "BH", qvalueCutoff =   cutoff, pvalueCutoff  = cutoff))
+  } else{
+    background_gene = clusterProfiler::bitr(background_gene, fromType = gene_format, toType ="ENTREZID", OrgDb="org.Hs.eg.db")
+    ego <-  simplify(enrichGO(gene = diff_gene_ID$ENTREZID,  OrgDb = org.Hs.eg.db,
+                              universe = background_gene$ENTREZID,
+                     keyType = 'ENTREZID', ont = ontology, readable = T,
+                     pAdjustMethod = "BH", qvalueCutoff  = cutoff, pvalueCutoff  = cutoff))
+  }
+
+  if(nrow(ego@result)>0){
+    print(dotplot(ego, showCategory = showCategory, font.size = font.size, x='Count',title=title))
+  }
+  return(ego)
+}
+```
+
+
+```{r}
+load("~/Project/ChenLab/result/rdata/Human_patch_part3.RData")
+Human_patch = NormalizeData(Human_patch)
+head(Human_patch@meta.data)
+```
+
+
+```{r,fig.width=5,fig.height=4.5}
+DimPlot(Human_patch, group.by = 'RNA_snn_res.0.6')
+```
+
+```{r}
+meta.all = read.table('~/Project/ChenLab/result/All patch-seq neurons meta data.txt', header = T, sep = '\t',fill = T)
+meta.all#[,96:100]
+
+meta.194 = read.table('~/Project/ChenLab/result/194 patch-seq neurons meta data.txt', header = F, sep = '\t',fill = T)
+meta.194
+
+length(intersect(colnames(Human_patch), meta.194$V1))
+
+length(intersect(rownames(Human_patch@meta.data), meta.194$V1))
+length(intersect(rownames(Human_patch@meta.data), meta.194$V69))
+
+length(intersect(colnames(Human_patch), meta.all$seq.ID.1))
+length(intersect(colnames(Human_patch), meta.all$seq.ID))
+
+meta2use = meta.all[meta.all$seq.ID%in%colnames(Human_patch),]
+colnames(meta2use)[18] = 'Layer'
+meta2use$age = gsub('m|d','',meta2use$age)
+meta2use$age = as.numeric(gsub('y','.',meta2use$age))
+summary(meta2use$age)
+rownames(meta2use) = meta2use$seq.ID
+
+meta2use = meta2use[colnames(Human_patch),]
+```
+
+## DEG identification
+```{r}
+Human_patch@meta.data = cbind(Human_patch@meta.data, meta2use[,c(7,9,10,13,16:18,20)])
+
+Human_patch@meta.data$SubType = factor(plyr::revalue(Human_patch@meta.data$RNA_snn_res.0.6,
+                                      c('1' = 'INT',
+                                        '0' = 'PY1',
+                                        '2' = 'PY2',
+                                        '3' = 'PY3')), levels = c('INT',paste0('PY',1:3)))
+```
+
+
+```{r}
+Human_patch@meta.data[grep('other|un',Human_patch@meta.data$Layer),'Layer'] = 'unknown'
+
+Human_patch@meta.data$Layer = factor(Human_patch@meta.data$Layer,
+                                     levels = c('upper','deeper','unknown'))
+
+write.csv(tibble::rownames_to_column(Human_patch@meta.data,var = 'cellID'),
+          row.names = F, quote = F,
+          file = '~/Project/ChenLab/Path-seq/result/text/ChenLab_Pathseq_197_cell_meta_info.csv')
+```
+
+
+```{r}
+meta.info = read.csv('~/Project/ChenLab/Path-seq/result/text/V2_ChenLab_Pathseq_197_cell_meta_info.csv', header = T)
+meta.info
+rownames(meta.info) = meta.info$cellID
+meta.info$Donor = substr(meta.info$cellID,1,8)
+table(meta.info$Donor)
+
+Human_patch@meta.data = meta.info
+
+table(meta.info$Brain.area)
+table(meta.info$pathology)
+colnames(meta.info)
+write.csv(meta.info[,c(1,27,26,18:25,2:17)],quote = F,row.names = F,
+          '~/Project/ChenLab/Path-seq/result/text/V3_ChenLab_Pathseq_197_cell_meta_info.csv')
+```
+
+
+## umap colored by characterization
+```{r}
+meta.info = meta.info[grep('hipp',meta.info$Brain.area,invert = T),]
+
+brain.area = pal_simpsons()(4); names(brain.area) = sort(unique(meta.info$Brain.area))
+pathology = pal_igv()(4); names(pathology) = sort(unique(meta.info$Pathology))
+layer = viridis::viridis_pal()(3); names(layer) = sort(unique(meta.info$Layer))
+
+Human_patch = Human_patch[,rownames(meta.info)]
+dim(Human_patch)
+```
+
+
+```{r,fig.width=5,fig.height=4.5}
+colnames(Human_patch@meta.data)
+
+DimPlot(Human_patch, group.by = 'sex')+
+  scale_color_jco()+ labs(title = 'Gender') + my_theme
+
+
+```
+
+```{r,fig.width=5.2,fig.height=4.5}
+Human_patch@meta.data[grep('other|un',Human_patch@meta.data$Layer),'Layer'] = 'unknown'
+
+Human_patch@meta.data$Layer = factor(Human_patch@meta.data$Layer,
+                                     levels = c('upper','deeper','unknown'))
+
+DimPlot(Human_patch, group.by = 'Layer')+
+  scale_color_manual(values = viridis_pal()(3))+ labs(title = 'Layer') + my_theme
+
+DimPlot(Human_patch, group.by = 'pathology')+
+   labs(title = 'Pathology') + my_theme
+```
+
+```{r,fig.width=5.5,fig.height=4.5}
+DimPlot(Human_patch, group.by = 'Brain.area')+
+  scale_color_simpsons()+ labs(title = 'Brain area') + my_theme
+
+```
+
+
+```{r,fig.width=7,fig.height=4.5}
+DimPlot(Human_patch, group.by = 'Donor')+labs(title = 'Donor') +
+  scale_color_manual(values = scales::hue_pal()(35)[c(1:3,13,5:12,4,14:35)])+
+  my_theme 
+
+```
+
+
+```{r,fig.width=5,fig.height=4.5}
+hmcols <- colorRampPalette(c('#E8C8C4','#B37290','#5C3461'))(50)
+
+tmp = matrix(meta2use$age,nrow = 1)
+rownames(tmp) = 'Age'
+
+Human_patch@assays$RNA@data = rbind(Human_patch@assays$RNA@data, tmp)
+
+FeaturePlot(Human_patch,'Age', cols = c('#E8C8C4','#5C3461'), ncol = 1)
+```
+
+
+```{r}
+setwd('~/Project/ChenLab/Path-seq/figure/characterization/')
+
+pdf('Gender_colored_UMAP.pdf',5,4.5)
+DimPlot(Human_patch, group.by = 'sex')+
+  scale_color_jco()+ labs(title = 'Gender') + my_theme
+dev.off()
+
+pdf('Age_colored_UMAP.pdf',5,4.5)
+FeaturePlot(Human_patch,'Age', cols = c('#E8C8C4','#5C3461'), ncol = 1)
+dev.off()
+
+
+cell2plot = rownames(meta.info[grep('hippo',meta.info$Brain.area,invert = T),])
+pdf('Brain_area_UMAP.pdf',5.5,4.5)
+DimPlot(Human_patch[,cell2plot], group.by = 'Brain.area')+
+  scale_color_simpsons()+ labs(title = 'Brain area') + my_theme
+dev.off()
+
+pdf('Pathology_colored_UMAP.pdf',5.2,4.5)
+DimPlot(Human_patch, group.by = 'pathology')+
+   labs(title = 'Pathology') + my_theme
+dev.off()
+
+pdf('Layer_colored_UMAP.pdf',5.2,4.5)
+DimPlot(Human_patch, group.by = 'Layer')+
+  scale_color_manual(values = viridis_pal()(3))+ labs(title = 'Layer') + my_theme
+dev.off()
+
+pdf('Donor_colored_UMAP.pdf',4.5,4.5)
+DimPlot(Human_patch, group.by = 'Donor')+labs(title = 'Donor') +
+  my_theme + theme(legend.position = 'none')
+dev.off()
+
+pdf('~/Project/ChenLab/Path-seq/figure/characterization/V2_Donor_colored_UMAP.pdf',4.5,4.5)
+DimPlot(Human_patch, group.by = 'Donor')+labs(title = 'Donor') +
+  scale_color_manual(values = scales::hue_pal()(35)[c(1:3,13,5:12,4,14:35)])+
+  my_theme + theme(legend.position = 'none')
+dev.off()
+```
+
+
+
+```{r}
+Idents(Human_patch) = 'SubType'
+
+cluster.markers = FindAllMarkers(Human_patch, only.pos = F)
+
+setDT(cluster.markers)
+
+cluster.markers[p_val_adj<0.05&pct.1>pct.2]
+
+table(cluster.markers[p_val_adj<0.05&pct.1>pct.2]$cluster)
+table(cluster.markers[p_val<0.05&pct.1>pct.2]$cluster)
+cluster.markers[,cluster:=factor(cluster,levels = c('INT',paste0('PY',1:3)))]
+sig.markers = cluster.markers[p_val_adj<0.05&pct.1>pct.2]
+```
+
+
+### List of interesting genes
+```{r}
+gene_list = c('GAD1', 'GAD2', 'ERBB4', 'DLX1', 'DLX2', 'LHX6', 'CUX2', 'SLC17A6', 'SLC17A7', 
+              'LINC00507', 'SATB2', 'TBR1','TSHZ2', 'DLC1', 'PAK6', 'SLC22A10', 'FOXP1', 'TRHDE',
+              'CHST8', 'HS3ST2','RPS6', 'RHEB', 'EIF4E' ,'EGR1', 'EGR2', 'EGR3', 'JUN' ,'DUSP6', 
+              'SOX11', 'PTMA', 'RACK1', 'C3', 'CDKN1A', 'NFKBIA' , 'IL1A', 'IL1B', 'IL6' ,'CCL4', 'CCL2',
+              'CXCL8', 'CXCL12' , 'MMP2', 'CTSB' , 'ICAM1', 'TNFRSF1B', 'TNFRSF12A', 'PLAUR' ,'IL6', 
+              'PTGS2', 'CX3CR1', 'TMEM119', 'CSF1R', 'SELPLG', 'MARCKS', 'IRF8', 'C1QA', 'CD74',
+              'HLA-A', 'HLA-B', 'HLA-C', 'HLA-E', 'HLA-DMB',' HLA-DPA1', 'HLA-DQB1', 'UCP2', 'CCND1', 
+              'TREM2', 'C1QA', 'APOE', 'CTSC', 'CTSS','NEFH')
+```
+
+```{r}
+sig.markers[gene%in%gene_list][order(cluster,gene)]
+
+gene2show = c('GAD1', 'GAD2', 'ERBB4', 'DLX1', 'DLX2', 'LHX6',
+              'CUX2', 'SLC17A6', 'SLC17A7', 'LINC00507', 'SATB2', 'TBR1','PTGS2', 'RHEB', 'EIF4E' ,
+              'RPS6','EGR1', 'EGR2', 'EGR3', 'DUSP6', 'C3', 'CDKN1A',  'CCL2','CD74','C1QA','NFKBIA', 
+              'TSHZ2', 'DLC1', 'PAK6', 'SLC22A10', 'FOXP1', 'TRHDE','CHST8', 'HS3ST2','NEFH')
+```
+
+```{r,fig.width=5,fig.height=4.5}
+color2use = scales::hue_pal()(4)[c(2,1,3,4)]
+DimPlot(Human_patch, group.by = 'SubType', cols = color2use)
+```
+
+
+```{r}
+path.mat = Human_patch@assays$RNA@data
+gene.melt = reshape2::melt(as.matrix(path.mat[rownames(path.mat)%in%gene_list,]))
+setDT(gene.melt)
+gene.melt
+```
+
+
+## Violin plots
+```{r,fig.width=5,fig.height=4}
+setwd('~/Project/ChenLab/Path-seq/figure/VlnPlot/')
+
+for(gene in gene_list[grep('HLA',gene_list,invert = T)]){
+  ym = max(gene.melt[Var1==gene]$value)
+  ym
+  vln = VlnPlot(Human_patch,gene,ncol = 1,group.by = 'SubType',
+                cols = color2use, slot = 'data', y.max = (ym+0.5)) + 
+     stat_compare_means(label.y = (ym+0.2),label.x=2,size=5)  +
+    labs(x = '') + theme(legend.position = 'none')
+  print(vln)
+  pdf(paste0(gene,'_violin_plot.pdf'),5,4)
+  print(vln)
+  dev.off()
+  #assign(gene, vln)
+}
+```
+
+
+```{r,fig.width=5,fig.height=5}
+gene = 'PTGS2'
+ym = max(gene.melt[Var1==gene]$value)
+ym
+
+VlnPlot(Human_patch, 'PTGS2', ncol = 1,group.by = 'SubType',
+                cols = color2use, slot = 'data',y.max = 3.2)+
+  stat_compare_means(comparisons = list(c('INT','PY1'),c('INT','PY2'),c('INT','PY3'),
+                                        c('PY1','PY2'),c('PY1','PY3'),c('PY2','PY3')))+
+  theme(legend.position = 'none')
+```
+
+
+```{r}
+pdf('~/Project/ChenLab/Path-seq/figure/VlnPlot/PTGS2_detailed_pvalue_VlnPlot.pdf',5,5)
+VlnPlot(Human_patch, 'PTGS2', ncol = 1,group.by = 'SubType',
+                cols = color2use, slot = 'data',y.max = 3.2)+
+  stat_compare_means(comparisons = list(c('INT','PY1'),c('INT','PY2'),c('INT','PY3'),
+                                        c('PY1','PY2'),c('PY1','PY3'),c('PY2','PY3')))+
+  theme(legend.position = 'none')
+dev.off()
+```
+
+```{r,fig.width=5,fig.height=5}
+gene = 'NEFH'
+ym = max(gene.melt[Var1==gene]$value)
+ym
+
+VlnPlot(Human_patch, 'NEFH', ncol = 1,group.by = 'SubType',
+                cols = color2use, slot = 'data',y.max = 2.7)+
+  stat_compare_means(label.y = 2.6,label.x=2,size=5)  +
+  stat_compare_means(comparisons = list(c('INT','PY1'),c('INT','PY2'),c('INT','PY3'),
+                                        c('PY1','PY2'),c('PY1','PY3'),c('PY2','PY3')))+
+  theme(legend.position = 'none')
+```
+
+```{r}
+pdf('~/Project/ChenLab/Path-seq/figure/VlnPlot/NEFH_detailed_pvalue_VlnPlot.pdf',5,5)
+VlnPlot(Human_patch, 'NEFH', ncol = 1,group.by = 'SubType',
+                cols = color2use, slot = 'data',y.max = 2.7)+
+  stat_compare_means(label.y = 2.6,label.x=2,size=5)  +
+  stat_compare_means(comparisons = list(c('INT','PY1'),c('INT','PY2'),c('INT','PY3'),
+                                        c('PY1','PY2'),c('PY1','PY3'),c('PY2','PY3')))+
+  theme(legend.position = 'none')
+dev.off()
+```
+
+## Feature plots
+```{r,fig.width=9,fig.height=7.5}
+#FeaturePlot(Human_patch, gene_list[1:9], cols = c('lightgrey','#FF4500'),ncol = 3,order = T)
+FeaturePlot(Human_patch, gene_list[1:9], cols = c('lightgrey','#FF4500'),ncol = 3,order = F)
+FeaturePlot(Human_patch, gene_list[10:18], cols = c('lightgrey','#FF4500'),ncol = 3,order = F)
+FeaturePlot(Human_patch, gene_list[19:27], cols = c('lightgrey','#FF4500'),ncol = 3,order = F)
+FeaturePlot(Human_patch, gene_list[28:36], cols = c('lightgrey','#FF4500'),ncol = 3,order = F)
+FeaturePlot(Human_patch, gene_list[37:45], cols = c('lightgrey','#FF4500'),ncol = 3,order = F)
+FeaturePlot(Human_patch, gene_list[46:54], cols = c('lightgrey','#FF4500'),ncol = 3,order = F)
+FeaturePlot(Human_patch, gene_list[55:63], cols = c('lightgrey','#FF4500'),ncol = 3,order = F)
+FeaturePlot(Human_patch, gene_list[64:71], cols = c('lightgrey','#FF4500'),ncol = 3,order = F)
+```
+
+
+```{r,fig.width=3.8,fig.height=3.5}
+setwd('~/Project/ChenLab/Path-seq/figure/FeauturePlot')
+
+for(gene in gene_list[grep('HLA',gene_list,invert = T)]){
+  pdf(paste0(gene,'_FeauturePlot.pdf'),3.8,3.5,onefile = T)
+  print(FeaturePlot(Human_patch, features = gene, cols = c('lightgrey','#FF4500'),ncol = 1,order = T))
+  print(FeaturePlot(Human_patch, features = gene, cols = c('lightgrey','#FF4500'),ncol = 1,order = F))
+  dev.off()
+}
+```
+
+## heatmaps to show DEGs
+
+## Heatmap to show top100 DEGs (p-value < 0.05)
+```{r,fig.width=9,fig.height=8}
+library(ComplexHeatmap)
+#gene2show = gene_list
+table(cluster.markers[p_val<0.05&pct.1>pct.2]$cluster)
+p05.markers = rbind(cluster.markers[p_val<0.05&pct.1>pct.2][,head(.SD,200), by = .(cluster)],
+                    sig.markers[gene%in%c('RHEB', 'EIF4E')])[order(cluster,gene)]
+p05.markers[gene%in%gene2show]
+#p05.markers = sig.markers[order(cluster,gene)]
+p05.markers[,seq:=1:nrow(p05.markers)]
+p05.markers[gene%in%gene2show]
+meta2use = meta.info
+meta2use$Pathology = 'Unknown'
+meta2use[grep('FCD',meta2use$pathology),'Pathology'] = 'FCD'
+meta2use[grep('TLE',meta2use$pathology),'Pathology'] = 'TLE'
+meta2use[grep('PT',meta2use$pathology),'Pathology'] = 'PT'
+table(meta2use$Pathology)
+meta2use[grep('deep',meta2use$Layer),]$Layer = 'Deep'
+meta2use[grep('upp',meta2use$Layer),]$Layer = 'Upper'
+table(meta2use$Layer)
+dim(meta2use)
+mat2use = Human_patch@assays$RNA@data[p05.markers$gene,rownames(meta2use)]
+mat2use = t(scale(t(as.matrix(mat2use))))
+max(mat2use)
+min(mat2use)
+dim(mat2use)
+mat2use[mat2use>2] = 2
+mat2use[mat2use<(-2)] = -2
+
+row_anno = rowAnnotation(foo = anno_mark(at = p05.markers[gene%in%gene2show]$seq,
+                                         labels = p05.markers[gene%in%gene2show]$gene))
+
+brain.area = pal_simpsons()(4); names(brain.area) = sort(unique(meta2use$Brain.area))
+pathology = pal_igv()(3); names(pathology) = sort(unique(meta2use$Pathology))
+layer = viridis::viridis_pal()(3); names(layer) = sort(unique(meta2use$Layer))
+
+col_anno = HeatmapAnnotation(CellType = anno_block(gp = gpar(fill = color2use), labels = c('INT',paste0('PY',1:3))),
+                             Brain_area = meta2use$Brain.area, Pathology = meta2use$Pathology, Layer = meta2use$Layer,
+                             col = list(Brain_area = brain.area, Pathology = pathology,Layer = layer))
+
+Heatmap(mat2use, name = 'Z-scored', cluster_rows = F, cluster_columns = F,
+        column_split = meta2use$SubType,row_split = p05.markers$cluster,
+        col = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(100),
+        right_annotation = row_anno, top_annotation = col_anno,show_row_names = F, show_column_names = F)
+```
+
+```{r}
+pdf('~/Project/ChenLab/Path-seq/figure/characterization/Fig1D_heatmaps_of_CellType_markers.pdf',9,8)
+Heatmap(mat2use, name = 'Z-scored', cluster_rows = F, cluster_columns = F,
+        column_split = meta2use$SubType,row_split = p05.markers$cluster,
+        right_annotation = row_anno, top_annotation = col_anno,show_row_names = F, show_column_names = F)
+dev.off()
+```
+
+## GO enrichment analysis
+```{r}
+sig.markers = cluster.markers[p_val_adj<0.05&pct.1>pct.2]
+table(sig.markers$cluster)
+p05.markers = cluster.markers[p_val<0.05&pct.1>pct.2]
+table(p05.markers$cluster)
+
+
+PY3.bp = run_GO_human(p05.markers[cluster=='PY3']$gene)
+
+gene_ID<-clusterProfiler::bitr(p05.markers[cluster=='PY3']$gene, fromType = 'SYMBOL',
+                               toType ="ENTREZID", OrgDb="org.Hs.eg.db")
+gene_ID
+
+write.table(gene_ID$ENTREZID, quote = F, row.names = F, col.names = F,
+            file = '~/Project/ChenLab/Path-seq/result/text/PY3_high_DEG_list.txt')
+```
+
+```{r}
+INT.bp = run_GO_human(p05.markers[cluster=='INT']$gene)
+
+PY1.bp = run_GO_human(p05.markers[cluster=='PY1']$gene)
+
+PY2.bp = run_GO_human(p05.markers[cluster=='PY2']$gene)
+```
+
+```{r}
+gene_ID<-clusterProfiler::bitr(p05.markers[cluster=='INT']$gene, fromType = 'SYMBOL',
+                               toType ="ENTREZID", OrgDb="org.Hs.eg.db")
+gene_ID
+
+write.table(gene_ID$ENTREZID, quote = F, row.names = F, col.names = F,
+            file = '~/Project/ChenLab/Path-seq/result/text/INT_high_DEG_list.txt')
+
+gene_ID<-clusterProfiler::bitr(p05.markers[cluster=='PY1']$gene, fromType = 'SYMBOL',
+                               toType ="ENTREZID", OrgDb="org.Hs.eg.db")
+
+
+write.table(gene_ID$ENTREZID, quote = F, row.names = F, col.names = F,
+            file = '~/Project/ChenLab/Path-seq/result/text/PY1_high_DEG_list.txt')
+
+gene_ID<-clusterProfiler::bitr(p05.markers[cluster=='PY2']$gene, fromType = 'SYMBOL',
+                               toType ="ENTREZID", OrgDb="org.Hs.eg.db")
+
+
+write.table(gene_ID$ENTREZID, quote = F, row.names = F, col.names = F,
+            file = '~/Project/ChenLab/Path-seq/result/text/PY2_high_DEG_list.txt')
+```
+
+
+```{r}
+INT.bp_df = as.data.table(INT.bp@result)
+
+PY1.bp_df = as.data.table(PY1.bp@result)
+
+PY2.bp_df = as.data.table(simplify(PY2.bp)@result)
+
+INT.bp_df[qvalue<0.05&Count>10]
+
+PY1.bp_df[qvalue<0.05&Count>10]
+
+PY2.bp_df[qvalue<0.01&Count>10]
+```
+
+### barplot of GO results
+```{r,fig.width=9.2,fig.height=5}
+INT.bp_df[,logP:=-log10(pvalue)]
+
+INT_bar = ggbarplot(INT.bp_df[1:10], x = 'Description', y = 'logP', fill = pal_aaas()(2)[2],
+        position = position_dodge(), rotate = TRUE,width = 0.7,sort.val =  'asc' ) + 
+  geom_hline(yintercept=c(-log10(0.05)),cex=1, colour="red", linetype="dashed")+ylim(c(0,10))+
+  labs( x ='',y='-log10(p-value)',title = 'GO analysis of INT DEGs') + my_theme 
+
+INT_bar
+
+
+PY1.bp_df[,logP:=-log10(pvalue)]
+
+PY1_bar = ggbarplot(PY1.bp_df[1:10], x = 'Description', y = 'logP', fill = pal_aaas()(2)[2],
+        position = position_dodge(), rotate = TRUE,width = 0.7,sort.val =  'asc' ) + 
+  geom_hline(yintercept=c(-log10(0.05)),cex=1, colour="red", linetype="dashed")+
+  labs( x ='',y='-log10(p-value)',title = 'GO analysis of PY1 DEGs') + my_theme 
+
+PY1_bar
+
+
+PY2.bp_df[,logP:=-log10(pvalue)]
+
+PY2_bar = ggbarplot(PY2.bp_df[c(1,3,5,6,9,12:13,19,25:26)], x = 'Description', y = 'logP', fill = pal_aaas()(2)[2],
+        position = position_dodge(), rotate = TRUE,width = 0.7,sort.val =  'asc' ) + 
+  geom_hline(yintercept=c(-log10(0.05)),cex=1, colour="red", linetype="dashed")+
+  labs( x ='',y='-log10(p-value)',title = 'GO analysis of PY2 DEGs') + my_theme 
+
+PY2_bar
+```
+
+```{r,fig.width=9,fig.height=5}
+PY3.bp_df = fread('~/Project/ChenLab/Path-seq/result/text/PY3_high_DEG_GO_result.txt',
+                  header = T, sep = '\t')
+PY3.bp_df[,Description:=mapply(function(x)x[2], strsplit(Term,'~'))]
+PY3.bp_df[,logP:=-log10(PValue)]
+PY3.bp_df[PValue<0.05&Count>=5,.(Description,PValue,Count)]
+
+PY3_bar = ggbarplot(PY3.bp_df[PValue<0.05&Count>=5][1:10], x = 'Description', y = 'logP', fill = pal_aaas()(2)[2],
+        position = position_dodge(), rotate = TRUE,width = 0.7,sort.val =  'asc') + 
+  geom_hline(yintercept=c(-log10(0.05)),cex=1, colour="red", linetype="dashed")+ylim(c(0,10))+
+  labs( x ='',y='-log10(p-value)',title = 'GO analysis of PY3 cluster DEGs') + my_theme 
+
+PY3_bar
+```
+
+```{r}
+pdf('~/Project/ChenLab/Path-seq/figure/GO/GO_bar/INT_high_DEG_GO_barplot.pdf',9,5)
+INT_bar
+dev.off()
+pdf('~/Project/ChenLab/Path-seq/figure/GO/GO_bar/PY1_high_DEG_GO_barplot.pdf',9,5)
+PY1_bar
+dev.off()
+pdf('~/Project/ChenLab/Path-seq/figure/GO/GO_bar/PY2_high_DEG_GO_barplot.pdf',9,5)
+PY2_bar
+dev.off()
+pdf('~/Project/ChenLab/Path-seq/figure/GO/GO_bar/PY3_high_DEG_GO_barplot.pdf',9,5)
+PY3_bar
+dev.off()
+```
+
+```{r}
+table(p05.markers$cluster)
+write.table(p05.markers, sep = ',', row.names = F, quote = F,
+            file = '~/Project/ChenLab/Path-seq/result/Path_seq_SubType_DEG_results.csv')
+```
+
+
+## brain region analysis in different subtype
+```{r}
+meta = Human_patch@meta.data
+meta$Pathology = 'FCD'
+meta[grep('PT',meta$pathology),'Pathology'] = 'PT'
+meta[grep('TLE',meta$pathology),'Pathology'] = 'TLE'
+table(meta$Pathology)
+meta -> Human_patch@meta.data
+```
+
+
+```{r}
+PY1 = subset(Human_patch, SubType=='PY1')
+table(PY1$Pathology)
+colnames(PY1@meta.data)
+Idents(PY1) = 'Pathology'
+
+PY1.DEG = FindAllMarkers(PY1, only.pos = T, logfc.threshold = 0.25)
+setDT(PY1.DEG)
+table(PY1.DEG$cluster)
+table(PY1.DEG[avg_log2FC>log2(1.5)]$cluster)
+
+PY1.DEG[gene%in%PY1.markers$gene]
+PY1.DEG[,cluster:=factor(cluster,levels = c("FCD","PT","TLE"))]
+PY1.DEG = PY1.DEG[order(cluster)]
+table(PY1.DEG[gene%in%PY1.markers$gene]$cluster)
+```
+
+```{r,fig.width=6,fig.height=6}
+library(ComplexHeatmap)
+pathology = pal_igv()(3); names(pathology) = sort(unique(meta$Pathology))
+pathology
+
+PY1 = ScaleData(PY1, features = rownames(PY1))
+
+DoHeatmap(PY1, PY1.DEG$gene, group.by = 'Pathology', group.colors = pathology,slot = 'scale.data',
+          disp.min = -2, disp.max = 2)
+
+PY1.meta=PY1@meta.data
+PY1.meta = PY1.meta[order(PY1.meta$Pathology),]
+
+mat2use = PY1@assays$RNA@data[PY1.DEG$gene,rownames(PY1.meta)]
+mat2use = t(scale(t(mat2use)))
+max(mat2use)
+min(mat2use)
+mat2use[1:5,1:5]
+
+mat2use[mat2use>1.5] = 1.5
+mat2use[mat2use<(-1.5)] = -1.5
+
+col_anno = HeatmapAnnotation(Pathology = PY1.meta$Pathology,
+                             col = list(Pathology = pathology))
+
+PY1.DEG[,group:=cluster]
+PY1.DEG[grep('FCD',cluster)]$group = 'FCD (n=25)'
+PY1.DEG[grep('PT',cluster)]$group = 'PT (n=114)'
+PY1.DEG[grep('TLE',cluster)]$group = 'TLE (n=52)'
+
+Heatmap(mat2use, name = 'Z-scored', cluster_rows = F, cluster_columns = F,
+        row_split = PY1.DEG$group,column_split = PY1.meta$Pathology,
+         col = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(100),
+        top_annotation = col_anno,show_row_names = F, show_column_names = F)
+```
+
+
+```{r}
+pdf('~/Project/ChenLab/Path-seq/revision/figure/PY1_pathology_specific_DEG_heatmaps.pdf',6,6)
+Heatmap(mat2use, name = 'Z-scored', cluster_rows = F, cluster_columns = F,
+        row_split = PY1.DEG$group,column_split = PY1.meta$Pathology,
+        top_annotation = col_anno,show_row_names = F, show_column_names = F)
+dev.off()
+```
+
+```{r}
+PY2 = subset(Human_patch, SubType=='PY2')
+table(PY2$Pathology)
+colnames(PY2@meta.data)
+Idents(PY2) = 'Pathology'
+
+PY2.DEG = FindAllMarkers(PY2, only.pos = T, logfc.threshold = 0.25)
+setDT(PY2.DEG)
+table(PY2.DEG$cluster)
+table(PY2.DEG[avg_log2FC>log2(1.5)]$cluster)
+
+PY2.DEG[gene%in%PY2.markers$gene]
+PY2.DEG[,cluster:=factor(cluster,levels = c("FCD","PT","TLE"))]
+PY2.DEG = PY2.DEG[order(cluster)]
+table(PY2.DEG[gene%in%PY2.markers$gene]$cluster)
+```
+
+```{r,fig.width=6,fig.height=6}
+library(ComplexHeatmap)
+pathology = pal_igv()(3); names(pathology) = sort(unique(meta$Pathology))
+pathology
+
+PY2 = ScaleData(PY2, features = rownames(PY2))
+
+DoHeatmap(PY2, PY2.DEG$gene, group.by = 'Pathology', group.colors = pathology,slot = 'scale.data',
+          disp.min = -2, disp.max = 2)
+
+PY2.meta=PY2@meta.data
+PY2.meta = PY2.meta[order(PY2.meta$Pathology),]
+
+mat2use = PY2@assays$RNA@data[PY2.DEG$gene,rownames(PY2.meta)]
+mat2use = t(scale(t(mat2use)))
+max(mat2use)
+min(mat2use)
+mat2use[1:5,1:5]
+
+mat2use[mat2use>1.5] = 1.5
+mat2use[mat2use<(-1.5)] = -1.5
+
+col_anno = HeatmapAnnotation(Pathology = PY2.meta$Pathology,
+                             col = list(Pathology = pathology))
+
+PY2.DEG[,group:=cluster]
+PY2.DEG[grep('FCD',cluster)]$group = 'FCD (n=3)'
+PY2.DEG[grep('PT',cluster)]$group = 'PT (n=160)'
+PY2.DEG[grep('TLE',cluster)]$group = 'TLE (n=76)'
+
+Heatmap(mat2use, name = 'Z-scored', cluster_rows = F, cluster_columns = F,
+        row_split = PY2.DEG$group,column_split = PY2.meta$Pathology,
+        top_annotation = col_anno,show_row_names = F, show_column_names = F)
+```
+
+
+```{r}
+pdf('~/Project/ChenLab/Path-seq/revision/figure/PY2_pathology_specific_DEG_heatmaps.pdf',6,6)
+Heatmap(mat2use, name = 'Z-scored', cluster_rows = F, cluster_columns = F,
+        row_split = PY2.DEG$group,column_split = PY2.meta$Pathology,
+        top_annotation = col_anno,show_row_names = F, show_column_names = F)
+dev.off()
+```
+
+
+```{r,fig.width=6,fig.height=6}
+library(ComplexHeatmap)
+pathology = pal_igv()(3); names(pathology) = sort(unique(meta$Pathology))
+pathology
+
+PY2 = ScaleData(PY2, features = rownames(PY2))
+
+DoHeatmap(PY2, PY2.DEG$gene, group.by = 'Pathology', group.colors = pathology,slot = 'scale.data',
+          disp.min = -2, disp.max = 2)
+
+PY2.meta=PY2@meta.data
+PY2.meta = PY2.meta[order(PY2.meta$Pathology),]
+
+mat2use = PY2@assays$RNA@data[PY2.DEG$gene,rownames(PY2.meta)]
+mat2use = t(scale(t(mat2use)))
+max(mat2use)
+min(mat2use)
+mat2use[1:5,1:5]
+
+mat2use[mat2use>1.5] = 1.5
+mat2use[mat2use<(-1.5)] = -1.5
+
+col_anno = HeatmapAnnotation(Pathology = PY2.meta$Pathology,
+                             col = list(Pathology = pathology))
+
+PY2.DEG[,group:=cluster]
+PY2.DEG[grep('FCD',cluster)]$group = 'FCD (n=3)'
+PY2.DEG[grep('PT',cluster)]$group = 'PT (n=160)'
+PY2.DEG[grep('TLE',cluster)]$group = 'TLE (n=76)'
+
+Heatmap(mat2use, name = 'Z-scored', cluster_rows = F, cluster_columns = F,
+        row_split = PY2.DEG$group,column_split = PY2.meta$Pathology,
+        col = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(100),
+        top_annotation = col_anno,show_row_names = F, show_column_names = F)
+```
+
+
+
+```{r}
+PT.bp = run_GO_human(PY2.DEG[cluster=='PT']$gene)
+TLE.bp = run_GO_human(PY2.DEG[cluster=='TLE']$gene)
+```
+
+
+```{r,fig.width=9,fig.height=7.5}
+table(PY2.DEG[gene%in%PY2.markers$gene]$cluster)
+
+PY2.DEG[gene%in%PY2.markers$gene][cluster=='TLE']
+
+VlnPlot(PY2, features = PY2.DEG[gene%in%PY2.markers$gene][cluster=='TLE']$gene,
+        group.by = 'Pathology', ncol = 3, pt.size = 0,cols = pal_igv(alpha = 0.9)(3))
+
+enrichplot::dotplot(FCD.bp,title = 'FCD-specific genes in PY1')
+```
