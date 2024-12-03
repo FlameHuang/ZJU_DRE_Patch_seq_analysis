@@ -1,0 +1,353 @@
+## condition-specific genes across pathology
+```{r}
+load('~/project/ChenLab/result/rdata/Chen_197_cells_patchseq_seurat_obj.RData')
+table(Human_patch$pathology)
+meta = Human_patch@meta.data
+meta$Pathology = do.call(rbind, strsplit(meta$pathology,' '))[,1]
+table(meta$Pathology)
+meta$Pathology = gsub('PTE','PT',meta$Pathology)
+meta[grep('TLE',meta$Pathology),]$Pathology = 'TLE'
+meta = cbind(meta, as.data.frame(Embeddings(Human_patch, reduction = 'umap')))
+meta -> Human_patch@meta.data
+sub.colors = scales::hue_pal()(4)[c(2,1,3,4)]
+meta$colors = plyr::revalue(meta$SubType, c('INT' = sub.colors[1],
+                                            'PY1' = sub.colors[2],
+                                            'PY2' = sub.colors[3],
+                                            'PY3' = sub.colors[4]))
+
+fig1C = meta[,c('cellID',paste0('UMAP_',1:2),'SubType','colors')]
+fig1C
+
+
+DimPlot(Human_patch, group.by = 'SubType',cols = sub.colors) #+ geom_ellipse()
+
+
+```
+
+
+## read Chen Lab SubType markers
+```{r}
+chen.markers = fread('~/project/ChenLab/Path-seq/result/Path_seq_SubType_DEG_results.csv', header = T, sep = ',')
+table(chen.markers$cluster)
+table(chen.markers[pct.1>pct.2&p_val_adj<0.05&avg_log2FC>log2(1.5)]$cluster)
+
+sig.markers = chen.markers[pct.1>pct.2&p_val<0.05&avg_log2FC>log2(2)]
+#sig.markers = sig.markers[,head(.SD,100),by=.(cluster)]
+table(sig.markers$cluster)
+```
+
+
+## Heatmap to show top100 DEGs (p-value < 0.05)
+```{r}
+
+meta =  Human_patch@meta.data
+head(meta); colnames(meta)
+meta2use = meta[,c('SubType','Brain.area','pathology','layer')]
+meta2use = meta2use[order(meta2use$SubType),]
+head(meta2use)
+
+meta2use$seq = plyr::revalue(meta2use$SubType,
+                         c('INT'=1,'PY1'=2,'PY2'=3,'PY3'=4))
+meta2use[meta2use$Brain.area=='hippocampus',]$Brain.area = 'temporal lobe'
+table(meta2use$layer)
+meta2use$Layer = 'Unknown'
+meta2use[grep('1|2|3',meta2use$layer),]$Layer = 'upper'
+meta2use[grep('4|5|6',meta2use$layer),]$Layer = 'deeper'
+#meta2use[meta2use$layer=='4-5',]$Layer = 'deeper'
+table(meta2use$Layer)
+
+table(meta2use$pathology)
+meta2use$Pathology = 'Unknown'
+meta2use[grep('FCD',meta2use$pathology),]$Pathology = 'FCD'
+meta2use[grep('TLE',meta2use$pathology),]$Pathology = 'TLE'
+meta2use[grep('PT',meta2use$pathology),]$Pathology = 'PT'
+table(meta2use$Pathology)
+```
+
+
+```{r,fig.width=9,fig.height=8}
+library(ComplexHeatmap)
+
+p05.markers = chen.markers[p_val<0.05&pct.1>pct.2][,head(.SD,200), by = .(cluster)][order(cluster,gene)]
+p05.markers[,seq:=1:nrow(p05.markers)]
+p05.markers[gene%in%gene2show]
+
+mat2use = Human_patch@assays$RNA@data[p05.markers$gene,rownames(meta2use)]
+mat2use = t(scale(t(as.matrix(mat2use))))
+max(mat2use)
+min(mat2use)
+
+mat2use[mat2use>2] = 2
+mat2use[mat2use<(-2)] = -2
+
+
+row_anno = rowAnnotation(foo = anno_mark(at = p05.markers[gene%in%gene2show]$seq,
+                                         labels = p05.markers[gene%in%gene2show]$gene))
+
+brain.area = pal_simpsons()(4); names(brain.area) = sort(unique(meta2use$Brain.area))
+pathology = pal_igv()(4); names(pathology) = sort(unique(meta2use$Pathology))
+layer = viridis_pal()(3); names(layer) = sort(unique(meta2use$Layer))
+
+col_anno = HeatmapAnnotation(CellType = anno_block(gp = gpar(fill = sub.colors), labels = c('INT',paste0('PY',1:3))),
+                             Brain_area = meta2use$Brain.area, Pathology = meta2use$Pathology, Layer = meta2use$Layer,
+                             col = list(Brain_area = brain.area, Pathology = pathology,Layer = layer))
+
+Heatmap(mat2use, name = 'Z-scored', cluster_rows = F, cluster_columns = F,
+        column_split = meta2use$seq,row_split = p05.markers$cluster,
+        right_annotation = row_anno, top_annotation = col_anno,show_row_names = F, show_column_names = F)
+
+fig1D = tibble::rownames_to_column(as.data.frame(mat2use),var = 'gene_name')
+```
+
+## Fig 1E
+```{r}
+hall.GSEA = fread('~/Project/ChenLab/Path-seq/result/PY2_vs_PY1_Hallmark_GSEA_results.txt', header = T, sep = '\t')
+hall.GSEA[grep('TOR|INFL',Description)]
+
+C2_df = fread('~/Project/ChenLab/Path-seq/result/PY2_vs_PY1_C2_GSEA_results.txt', header = T, sep = '\t')
+C2_df[grep('FRIDMAN',Description)]
+
+fig1E = rbind(C2_df[grep('FRIDMAN',Description)],
+              hall.GSEA[grep('INFL|TOR',Description)])
+
+fig1E
+```
+
+## Fig 1F
+```{r}
+gene2show = c('GAD1', 'GAD2', 'ERBB4', 'DLX1', 'DLX2', 'LHX6',
+              'CUX2', 'SLC17A6', 'SLC17A7', 'SATB2', 'TBR1','PTGS2',
+              'RPS6', 'RHEB', 'EIF4E', 'CDKN1A','CCL2','NFKBIA', 
+              'TSHZ2',  'PAK6', 'SLC22A10', 'FOXP1','CHST8', 'HS3ST2',
+              paste0('EGR',2:3),'JUN','DUSP6','MMP2','CTSB','TNFRSF12A',
+              'IL1A','IL1B','CCL4','CXCL12','CXCL8','ICAM1','TNFRSF1B')
+patch.mat = Human_patch@assays$RNA@data
+
+for(ge in gene2show){
+  meta[,ge] = as.numeric(patch.mat[ge,])
+}
+colnames(meta)
+
+fig1F = meta[,c(1,26,40:63)]
+fig1F
+
+S1B = meta[,c(1,26,64:77)]
+```
+
+
+
+```{r,fig.width=4,fig.height=5}
+cell_table = as.data.frame(with(meta2use[meta2use$Pathology!='Unknown',], table(Pathology, SubType)))
+
+cell_table
+
+setDT(cell_table)
+cell_per = cell_table[,100*Freq/sum(Freq), by = .(Pathology)]
+cell_per$SubType = rep(unique(cell_table$SubType),3)
+
+cell_per
+
+cell_table = cell_table[order(Pathology)]
+cell_table$Percentage = cell_per$V1
+
+pathology = cell_table#[order(SubType),c(2,1,3,4)]
+
+patho_bar = ggbarplot(cell_per, x = 'Pathology', y = 'V1', fill = 'SubType',
+        position = position_stack(), palette = sub.colors,width = 0.7) + 
+  labs( x ='',y='Percentage of cells (%)')  + my_theme + theme(legend.title = element_blank(),
+                                                              legend.position = 'right')
+
+patho_bar
+```
+
+```{r,fig.width=4.5,fig.height=5}
+meta2plot = as.data.table(meta2use)
+meta2plot
+table(meta2plot$Brain.area)
+meta2plot$area = 'FL'
+meta2plot[grep('insular',Brain.area)]$area = 'IL'
+meta2plot[grep('parietal',Brain.area)]$area = 'PL'
+meta2plot[grep('temporal',Brain.area)]$area = 'TL'
+table(meta2plot$area)
+
+cell_table = as.data.frame(with(meta2plot, table(area, SubType)))
+
+cell_table
+
+setDT(cell_table)
+cell_per = cell_table[,100*Freq/sum(Freq), by = .(area)]
+cell_per$SubType = rep(unique(cell_table$SubType),4)
+
+cell_per
+
+cell_table = cell_table[order(area)]
+cell_table$Percentage = cell_per$V1
+
+brain.area = cell_table#[order(SubType),c(2,1,3,4)]
+
+area_bar = ggbarplot(cell_per, x = 'area', y = 'V1', fill = 'SubType',
+        position = position_stack(), palette = sub.colors,width = 0.7) + 
+  labs( x ='',y='Percentage of cells (%)')  + my_theme + theme(legend.title = element_blank(),
+                                                              legend.position = 'right')
+
+area_bar
+```
+
+```{r}
+pathology[,Percentage:=round(Percentage,2)]
+brain.area[,Percentage:=round(Percentage,2)]
+
+ write.table(pathology, sep = '\t', row.names = F, col.names = T, quote = F, file = '~/Project/ChenLab/Path-seq/result/Pathology_percentage_by_subtype.txt')
+
+write.table(brain.area, sep = '\t', row.names = F, col.names = T, quote = F, file = '~/Project/ChenLab/Path-seq/result/Brain_area_percentage_by_subtype.txt')
+```
+
+```{r}
+library(openxlsx)
+fig1.list = list(fig1C,fig1D,fig1E,fig1F,S1B)
+write.xlsx(fig1.list, file = 'E:/Project/ChenLab/fig1_supply.xlsx',overwrite = T)
+```
+
+
+```{r}
+p05.markers = chen.markers[p_val<0.05&pct.1>pct.2]
+
+INT.bp = run_GO_human(p05.markers[cluster=='INT']$gene)
+
+PY1.bp = run_GO_human(p05.markers[cluster=='PY1']$gene)
+
+PY2.bp = run_GO_human(p05.markers[cluster=='PY2']$gene)
+```
+
+
+```{r}
+INT.bp_df = as.data.table(INT.bp@result)
+
+PY1.bp_df = as.data.table(PY1.bp@result)
+
+PY2.bp_df = as.data.table(simplify(PY2.bp)@result)
+
+INT.bp_df[qvalue<0.05&Count>10]
+
+PY1.bp_df[qvalue<0.05&Count>10]
+
+PY2.bp_df[qvalue<0.01&Count>10]
+```
+
+
+```{r}
+INT.bp_df #= fread('~/Project/ChenLab/Path-seq/result/INT_DEG_GO_results.txt',header = T,sep = '\t')
+INT.bp_df = INT.bp_df[qvalue<0.05&Count>10][c(1:5,11,6,8,18,16)]
+INT.bp_df$Description[6] = 'negative regulation of cell development'
+
+PY1.bp_df = fread('~/Project/ChenLab/Path-seq/result/PY1_DEG_GO_results.txt',header = T,sep = '\t')
+PY1.bp_df[1:10]
+
+PY2.bp_df = fread('~/Project/ChenLab/Path-seq/result/PY2_DEG_GO_results.txt',header = T,sep = '\t')
+PY2.bp_df = PY2.bp_df[c(1,3,2,5,8,11,12,23,24,27)]
+PY2.bp_df$Description[3] = 'establishment of protein localization to endoplasmic reticulum'
+PY2.bp_df
+
+PY3.bp_df = fread('~/Project/ChenLab/Path-seq/result/text/PY3_high_DEG_GO_result.txt',header = T,sep = '\t')
+PY3.bp_df[,Category:=mapply(function(x)x[1],strsplit(Term,'~'))]
+PY3.bp_df[,Term:=mapply(function(x)x[2],strsplit(Term,'~'))]
+colnames(PY3.bp_df)[c(1:2,5,6,11,12)] = c('ID','Description','pvalue','geneID','p.adjust','qvalue') 
+PY3.bp_df = PY3.bp_df[c(1,2,5,7:10,13,19,23),c(1,2,5,11,12,6,3)]
+
+PY3.bp_df
+```
+
+```{r}
+colnames(PY1.bp_df)
+
+
+go.list = list(INT.bp_df[,-c(3,4,9)][,cluster:='INT'],
+               PY1.bp_df[1:10,-c(3,4,10)][,cluster:='PY1'],
+               PY2.bp_df[,-c(3,4,9)][,cluster:='PY2'],
+               PY3.bp_df[,cluster:='PY3'])
+
+go.list
+
+
+write.xlsx(go.list, file = 'E:/Project/ChenLab/figS1_go.xlsx',overwrite = T)
+```
+
+
+```{r}
+for(i in 1:nrow(PY3.bp_df)){
+  ids = unlist(strsplit(PY3.bp_df$geneID[i],','))
+  ids = gsub(' ','',ids)
+  ids
+  symbol = bitr(ids,fromType = 'ENTREZID',toType = 'SYMBOL',OrgDb = 'org.Hs.eg.db')
+  
+  symbol = paste0(symbol$SYMBOL,collapse = '/')
+  PY3.bp_df$geneID[i] = symbol
+}
+PY3.bp_df
+
+write.xlsx(PY3.bp_df, file = 'E:/Project/ChenLab/JCI/PY3_GO.xlsx')
+```
+
+
+
+```{r}
+load('/data/home/shenlab/huangfei/project/ChenLab/Path-seq/public_data/Science_human_L23/HVS_L23_harmony_obj.RData')
+HVS.meta = HVS_L23@meta.data
+#cellsReduction = as.data.frame(Embeddings(object = HVS_L23, reduction = "umap"))
+
+S1CD = HVS.meta[,c('cellID','UMAP_1','UMAP_2','Supertype','diagnosis','seurat_clusters')]
+setDT(S1CD)
+S1CD = S1CD[diagnosis!='Unknown'][,diagnosis:=gsub('Tumor','Non-epilepsy',diagnosis)]
+
+
+PY2 = subset(HVS.meta, Subtype=='PY2-like')
+PY2 = subset(HVS.meta, AUC.PY2>0.3&seurat_clusters==3)
+
+S1G = PY2[,c('cellID','UMAP_1','UMAP_2','Subtype','diagnosis','GSVA.PY2')]
+setDT(S1G)
+S1G = S1G[diagnosis!='Unknown'][,diagnosis:=gsub('Tumor','Non-epilepsy',diagnosis)][order(diagnosis)]
+
+S1E = HVS.meta[,c('cellID','UMAP_1','UMAP_2','diagnosis',paste0('GSVA.',c('INT','PY1','PY2','PY3')))]
+for(gene in c('RPS6','TPI1','ENO1','PGK1')){
+  S1E[,gene] = as.numeric(HVS_L23@assays$RNA@data[gene,])
+}
+setDT(S1E)
+S1EF = S1E[diagnosis!='Unknown'][,diagnosis:=gsub('Tumor','Non-epilepsy',diagnosis)]
+
+S1.list = list(S1CD,S1G,S1EF)
+names(S1.list) = c('S1CD','S1G','S1EF')
+library(openxlsx)
+write.xlsx(S1.list, file = '/data/home/shenlab/huangfei/project/ChenLab/Path-seq/public_data/Science_human_L23/FigS1_data.xlsx')
+```
+
+
+
+
+## Comparison of PY2-like cells between epilepsy vs non-epilepsy
+```{r}
+Epilepsy = subset(HVS_L23,diagnosis=='Epilepsy')
+Tumor = subset(HVS_L23,diagnosis=='Tumor')
+
+Epilepsy.meta = Epilepsy@meta.data
+setDT(Epilepsy.meta)
+Epilepsy.PY2 = Epilepsy.meta[AUC.PY2>0.3&seurat_clusters==3]
+nrow(Epilepsy.meta[AUC.PY2>0.3&seurat_clusters==3])
+nrow(Epilepsy.meta)
+##317; 0.006231938
+
+Tumor.meta = Tumor@meta.data
+setDT(Tumor.meta)
+Tumor.PY2 = Tumor.meta[AUC.PY2>0.3&seurat_clusters==3]
+nrow(Tumor.meta[AUC.PY2>0.3&seurat_clusters==3])
+nrow(Tumor.meta)
+##100;0.004143017
+
+epi_vs_tumor = matrix(c(317,50550,100,24037),ncol=2)
+
+fisher.test(epi_vs_tumor)
+
+S1G = rbind(Epilepsy.PY2,Tumor.PY2)[,c('cellID','diagnosis','GSVA.PY2')]
+S1G[,diagnosis:=gsub('Tumor','Non-epilepsy',diagnosis)]
+write.csv(S1G,quote = F,row.names = F,
+          file = '/data/home/shenlab/huangfei/project/ChenLab/Path-seq/public_data/Science_human_L23/FigS1G.csv')
+```
